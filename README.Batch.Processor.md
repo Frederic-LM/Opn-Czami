@@ -74,7 +74,6 @@ Here is what your Excel sheet should look like:
 | | A | B |
 | :--- | :--- | :--- |
 | **1** | `stradivarius-1715/front.jpg` | `Certificate of authenticity for the 'Titian' Stradivarius violin...` |
-| **2** | `stradivarius-1715/back.jpg` | `Detail shot of the one-piece back of the 'Titian' Stradivarius...` |
-| **3** | `guarneri-1741/front.jpg` | `Valuation for the 'Vieuxtemps' Guarneri 'del Gesù' violin, 1741...` |
+| **2** | `guarneri-1741/front.jpg` | `Valuation for the 'Vieuxtemps' Guarneri 'del Gesù' violin, 1741...` |
 
 **Important Note on Summaries:** The summary text is limited to **400 characters**. The application will flag any summary longer than this as an error during the loading phase.
