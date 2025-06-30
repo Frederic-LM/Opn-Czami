@@ -75,7 +75,7 @@ You can hire me for consulting services.
 
 # 📱 Legato Phone App 
 
-Also free, available on Android, and possibly on iPhone.
+Also free, available on Android, and possibly on iPhone. (curently under developement)
 
 ---
 
