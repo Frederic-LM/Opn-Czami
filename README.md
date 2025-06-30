@@ -69,8 +69,8 @@ If you're managing high-volume operations or need legal-grade evidence, I've got
 - 🖋️ **Watermarking Tool** — Add your brand or logo automatically.
 
 ## Need Help With Your Logo or Organizing Your Workflow?
-You can hire me for consulting services.
----
+   You can hire me for consulting services.
+ 
 
 ## 🪟 Windows Installation
 
