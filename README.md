@@ -72,15 +72,45 @@ If you're managing high-volume operations or need legal-grade evidence, I've got
    You can hire me for consulting services.
  
 
-## 🪟 Windows Installation
+## 🖥️ Download & Install Op'n Czami
 
-Windows users can download and install **Op'n Czami** easily using the official installer.
+### 🪟 For Windows Users
 
-➡️ [Download Op'n Czami for Windows](https://github.com/Frederic-LM/Opn-Czami/releases/download/Win-installer/Setup-Op.n-Czami.exe)
+You can install **Op'n Czami** on Windows using the official installer:
 
-Just click the link above to download the `.exe` installer and follow the on-screen instructions.
+➡️ [Download for Windows (.exe)](https://github.com/Frederic-LM/Opn-Czami/releases/download/Win-installer/Setup-Op.n-Czami.exe)
 
-**Note:** No registration or payment is required — the software is available for free.
+1. Download the file.
+2. Double-click the `.exe` to launch the installer.
+3. Follow the on-screen instructions.
+
+✅ Free to use — no registration required.
+
+---
+
+### 🍎 For macOS Users (Apple Silicon)
+
+➡️ [Download for macOS (.dmg)](https://github.com/Frederic-LM/Opn-Czami/releases/download/MacOSDmg/opnczami.dmg)
+
+1. Download the `.dmg` file.
+2. Open it and drag **Op'n Czami** into your Applications folder.
+3. If you see a security warning, right-click the app and choose **Open** to allow it.
+
+🧠 *Tested on Apple Silicon (M1/M2/M3M4).* 
+You can download and run the macOS version, but be aware that it may feel sluggish or awkward to use. This isn’t a bug — it’s a *“feature”* related to the cult of the fruit (🍎) decided to handles **Tcl/Tk GUI applications written in Python**.
+Specifically, macOS enforces **Force Click** behavior on the trackpad, which can require a hard press for clicks to register properly. This affects interaction with the app’s interface.
+
+### Workaround Tips:
+- **Disable Force Click** in your Trackpad settings (System Settings > Trackpad > Point & Click).
+- Use the **Tab key** to navigate quickly through interface elements.
+It's unfortunate, as the app runs fast and smoothly on macOS — if only it didn’t force users to long-press to click. Hopefully, this behavior will improve with future updates to macOS or the Tcl/Tk libraries.
+
+🔒 Notarization: App may require permissions due to macOS Gatekeeper.
+
+---
+
+If you run into any issues during installation, feel free to open an issue on the [GitHub Issues page](https://github.com/Frederic-LM/Opn-Czami/issues).
+
 
 
 # 📱 Legato Phone App 
