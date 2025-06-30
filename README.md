@@ -70,8 +70,18 @@ If you're managing high-volume operations or need legal-grade evidence, I've got
 
 ## Need Help With Your Logo or Organizing Your Workflow?
 You can hire me for consulting services.
-
 ---
+
+## 🪟 Windows Installation
+
+Windows users can download and install **Op'n Czami** easily using the official installer.
+
+➡️ [Download Op'n Czami for Windows](https://github.com/Frederic-LM/Opn-Czami/releases/download/Win-installer/Setup-Op.n-Czami.exe)
+
+Just click the link above to download the `.exe` installer and follow the on-screen instructions.
+
+**Note:** No registration or payment is required — the software is available for free.
+
 
 # 📱 Legato Phone App 
 
