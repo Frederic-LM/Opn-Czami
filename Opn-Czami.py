@@ -150,7 +150,7 @@ class AppConfig:
     ftp_host: str = ""
     ftp_user: str = ""
     ftp_path: str = ""
-    ftp_pass_b64: str = ""  # Base64 encoded, used only when not in hardened mode
+    ftp_pass_b64: str = "" 
     ftp_auto_upload: bool = False
     hardened_security: bool = False
     enable_audit_trail: bool = False
@@ -315,30 +315,9 @@ class CryptoManager:
     def sign_payload(private_key_pem: str, payload_dict: dict) -> str:
         """Signs a dictionary payload with a private key and returns a base64 signature."""
         priv_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
-        # Use compact JSON format for consistent hashing
         payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-        # ---  Switch between RSA and Ed25519 signing ---
-
-        # --- Ed25519 (New and Active) ---
-        # Ed25519 signs the message directly. It's faster and the signature is much smaller (64 bytes).
         signature = priv_key.sign(payload_json)
-
-        # --- RSA-2048 (Old - Commented Out) ---
-        # hasher = hashes.Hash(hashes.SHA256())
-        # hasher.update(payload_json)
-        # digest = hasher.finalize()
-        # signature = priv_key.sign(
-        #     digest,
-        #     padding.PSS(
-        #         mgf=padding.MGF1(hashes.SHA256()),
-        #         salt_length=padding.PSS.MAX_LENGTH
-        #     ),
-        #     utils.Prehashed(hashes.SHA256()),
-        # )
-                # return base64.b64encode(signature).decode("utf-8") # Old line
-        return base64.urlsafe_b64encode(signature).decode("utf-8") # New line for URL safety
-
-      
+        return base64.urlsafe_b64encode(signature).decode("utf-8") 
 
     @staticmethod
     def verify_signature(public_key_pem: str, signature_b64: str, payload_dict: dict) -> bool:
@@ -531,13 +510,12 @@ class ImageProcessor:
 
         image = image_pil.copy().convert("RGBA")
         logo = logo_pil.copy().convert("RGBA")
-        
-        # Make logo semi-transparent
+
         try:
             alpha = logo.getchannel('A')
             alpha = alpha.point(lambda p: p * 0.5)
             logo.putalpha(alpha)
-        except (IndexError, ValueError): # No alpha channel or not RGBA
+        except (IndexError, ValueError): 
             pass
         
         logo.thumbnail((int(image.width * 0.25), image.height), self.resample_method)
@@ -923,15 +901,7 @@ class IssuerApp:
         if not messagebox.askokcancel("Confirm Identity Creation", f"This will create the identity '{name}' with the permanent ID:\n\n{issuer_id}\n\nProceed?"):
             return
         try:
-            # --- MODIFICATION START: Switch key generation ---
-
-            # --- Ed25519 (New and Active) ---
             priv_key = ed25519.Ed25519PrivateKey.generate()
-
-            # --- RSA-2048 (Old - Commented Out) ---
-            # priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            
-            # --- MODIFICATION END ---
             priv_key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode("utf-8")
             pub_key_pem = priv_key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode("utf-8")
             url_path = url_path.removesuffix("/") + "/"
@@ -1058,10 +1028,7 @@ class IssuerApp:
                     log_details = {"filename": upload_filename, "message": summary_msg, "file_hash": file_hash}
                     self.crypto_manager.log_event(self.active_issuer_id, self.active_issuer_data["priv_key_pem"], "SIGN_SUCCESS", log_details)
                 
-                # --- MODIFICATION: Switched to urlsafe_b64encode for URL safety ---
-                # payload_b64 = base64.b64encode(json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8") # Old Line
-                payload_b64 = base64.urlsafe_b64encode(json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8") # New Line
-                # --- END OF MODIFICATION ---
+                payload_b64 = base64.urlsafe_b64encode(json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8")
 
                 final_qr_string = f"{self.active_issuer_id}-{payload_b64}-{signature_b64}"
                 
@@ -1218,7 +1185,6 @@ class IssuerApp:
                                     "Hardened Security is ON.\n\nTo create a complete backup, the private key will be temporarily moved from the OS Keychain to a file. It will be moved back and the file securely deleted when the backup is finished.\n\nProceed?"):
                 return
 
-        # A robust try/finally block to ensure security is always restored
         try:
             # --- Temporarily Disable Hardened Security if needed ---
             if is_hardened:
@@ -2544,3 +2510,4 @@ if __name__ == "__main__":
     root.mainloop()
 
     logging.info("================ Application Closed ================\n")
+
