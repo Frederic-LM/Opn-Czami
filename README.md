@@ -89,7 +89,7 @@ You can install **Op'n Czami** on Windows using the official installer:
 ---
 
 ### 🍎 For macOS Users (Apple Silicon)
-
+ ❗I decided to remove the macOS build due to sluggish nature of Apple software code component, you may still buil it yourself but I suggest using the Windows version even on mac via an emulator
 ➡️ [Download for macOS (.dmg)](https://github.com/Frederic-LM/Opn-Czami/releases/download/MacOSDmg/opnczami.dmg)
 
 1. Download the `.dmg` file.
