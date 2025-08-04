@@ -78,7 +78,7 @@ If you're managing high-volume operations or need legal-grade evidence, I've got
 
 You can install **Op'n Czami** on Windows using the official installer:
 
-➡️ [Download for Windows (.exe)](https://github.com/Frederic-LM/Opn-Czami/releases/download/RC2/Setup-OpnCzami.exe)
+➡️ [Download for Windows (.exe)](https://github.com/Frederic-LM/Opn-Czami/releases/download/RC2/Setup-OpnCzame.exe)
 
 1. Download the file.
 2. Double-click the `.exe` to launch the installer.
