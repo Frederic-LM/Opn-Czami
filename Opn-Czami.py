@@ -46,7 +46,7 @@ import requests
 import ttkbootstrap as ttk
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
+from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils, ed25519 # For Ed25519 support
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 from ttkbootstrap.constants import *
 from ttkbootstrap.scrolled import ScrolledText
@@ -63,7 +63,7 @@ except ImportError:
 from license_manager import LicenseManager, get_app_data_path
 
 # --- Application Constants ---
-APP_VERSION = "4.4.2"
+APP_VERSION = "4.5.0"
 APP_NAME = "OpnCzami"
 KEYRING_SERVICE_NAME = "OperatorIssuerApp"
 KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
@@ -268,7 +268,7 @@ class CryptoManager:
                     try:
                         keyring.delete_password(self.service_name, f"{key_name}_chunk_{i}")
                     except Exception:
-                        pass # Ignore if a chunk is already gone
+                        pass 
                 keyring.delete_password(self.service_name, f"{key_name}_meta")
         except Exception as e:
             logging.warning(f"Could not fully delete '{key_name}' from keystore: {e}", exc_info=True)
@@ -317,18 +317,28 @@ class CryptoManager:
         priv_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
         # Use compact JSON format for consistent hashing
         payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-        hasher = hashes.Hash(hashes.SHA256())
-        hasher.update(payload_json)
-        digest = hasher.finalize()
-        signature = priv_key.sign(
-            digest,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            utils.Prehashed(hashes.SHA256()),
-        )
-        return base64.b64encode(signature).decode("utf-8")
+        # ---  Switch between RSA and Ed25519 signing ---
+
+        # --- Ed25519 (New and Active) ---
+        # Ed25519 signs the message directly. It's faster and the signature is much smaller (64 bytes).
+        signature = priv_key.sign(payload_json)
+
+        # --- RSA-2048 (Old - Commented Out) ---
+        # hasher = hashes.Hash(hashes.SHA256())
+        # hasher.update(payload_json)
+        # digest = hasher.finalize()
+        # signature = priv_key.sign(
+        #     digest,
+        #     padding.PSS(
+        #         mgf=padding.MGF1(hashes.SHA256()),
+        #         salt_length=padding.PSS.MAX_LENGTH
+        #     ),
+        #     utils.Prehashed(hashes.SHA256()),
+        # )
+                # return base64.b64encode(signature).decode("utf-8") # Old line
+        return base64.urlsafe_b64encode(signature).decode("utf-8") # New line for URL safety
+        # --- MODIFICATION END ---
+      
 
     @staticmethod
     def verify_signature(public_key_pem: str, signature_b64: str, payload_dict: dict) -> bool:
@@ -340,15 +350,28 @@ class CryptoManager:
             hasher.update(payload_json)
             digest = hasher.finalize()
             signature = base64.b64decode(signature_b64)
-            pub_key.verify(
-                signature,
-                digest,
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH,
-                ),
-                utils.Prehashed(hashes.SHA256()),
-            )
+    # --- MODIFICATION START: Switch between RSA and Ed25519 verification ---
+
+            # --- Ed25519 (New and Active) ---
+            # The verify method will raise InvalidSignature on failure. We just call it directly.
+            pub_key.verify(signature, payload_json)
+            
+            # --- RSA-2048 (Old - Commented Out) ---
+            # hasher = hashes.Hash(hashes.SHA256())
+            # hasher.update(payload_json)
+            # digest = hasher.finalize()
+            # pub_key.verify(
+            #     signature,
+            #     digest,
+            #     padding.PSS(
+            #         mgf=padding.MGF1(hashes.SHA256()),
+            #         salt_length=padding.PSS.MAX_LENGTH,
+            #     ),
+            #     utils.Prehashed(hashes.SHA256()),
+            # )
+
+            # --- MODIFICATION END ---
+            
             return True
         except (InvalidSignature, ValueError, Exception):
             return False
@@ -922,7 +945,15 @@ class IssuerApp:
         if not messagebox.askokcancel("Confirm Identity Creation", f"This will create the identity '{name}' with the permanent ID:\n\n{issuer_id}\n\nProceed?"):
             return
         try:
-            priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            # --- MODIFICATION START: Switch key generation ---
+
+            # --- Ed25519 (New and Active) ---
+            priv_key = ed25519.Ed25519PrivateKey.generate()
+
+            # --- RSA-2048 (Old - Commented Out) ---
+            # priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            
+            # --- MODIFICATION END ---
             priv_key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode("utf-8")
             pub_key_pem = priv_key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode("utf-8")
             url_path = url_path.removesuffix("/") + "/"
@@ -1036,15 +1067,26 @@ class IssuerApp:
                 prepared_upload_path = temp_dir / upload_filename
                 image_format = "JPEG" if proof_path.suffix.lower() in [".jpg", ".jpeg"] else "PNG"
                 final_proof_image.save(prepared_upload_path, format=image_format, quality=95)
+                
                 file_hash = self.crypto_manager.calculate_file_hash(prepared_upload_path)
-                if not file_hash: return False, False, "Could not calculate proof file hash." # Changed return type
+                if not file_hash: return False, False, "Could not calculate proof file hash."
+                
                 payload_dict = {"imgId": upload_filename, "msg": summary_msg, "h": file_hash}
+                
+                # This signature is now URL-safe because we already updated the CryptoManager
                 signature_b64 = self.crypto_manager.sign_payload(self.active_issuer_data["priv_key_pem"], payload_dict)
+                
                 if self.config.enable_audit_trail and self.license_manager.is_feature_enabled("audit"):
                     log_details = {"filename": upload_filename, "message": summary_msg, "file_hash": file_hash}
                     self.crypto_manager.log_event(self.active_issuer_id, self.active_issuer_data["priv_key_pem"], "SIGN_SUCCESS", log_details)
-                payload_b64 = base64.b64encode(json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8")
+                
+                # --- MODIFICATION: Switched to urlsafe_b64encode for URL safety ---
+                # payload_b64 = base64.b64encode(json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8") # Old Line
+                payload_b64 = base64.urlsafe_b64encode(json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8") # New Line
+                # --- END OF MODIFICATION ---
+
                 final_qr_string = f"{self.active_issuer_id}-{payload_b64}-{signature_b64}"
+                
                 doc_logo_path = resource_path("legatokey.png")
                 document_logo_pil = Image.open(doc_logo_path) if doc_logo_path.exists() else None
                 qr_image_pil = self.image_processor.generate_qr_with_logo(final_qr_string, document_logo_pil, sizing_ratio=0.40)
@@ -1069,9 +1111,10 @@ class IssuerApp:
                     if not is_auto_upload_successful:
                         return False, False, f"Auto-upload failed: {upload_result_msg}"
                 return True, is_auto_upload_successful, "Document signed and processed successfully."
+            
             except Exception as e:
                 logging.error(f"Error during document signing: {e}", exc_info=True)
-                return False, False, f"Signing failed due to an unexpected error: {e}" 
+                return False, False, f"Signing failed due to an unexpected error: {e}"
 
     def generate_document_qr(self):
         if self.is_generating or not self.selected_proof_file_path: return
