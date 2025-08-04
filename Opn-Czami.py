@@ -63,7 +63,7 @@ except ImportError:
 from license_manager import LicenseManager, get_app_data_path
 
 # --- Application Constants ---
-APP_VERSION = "4.5.0"
+APP_VERSION = "4.4.3"
 APP_NAME = "OpnCzami"
 KEYRING_SERVICE_NAME = "OperatorIssuerApp"
 KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
@@ -268,7 +268,7 @@ class CryptoManager:
                     try:
                         keyring.delete_password(self.service_name, f"{key_name}_chunk_{i}")
                     except Exception:
-                        pass 
+                        pass # Ignore if a chunk is already gone
                 keyring.delete_password(self.service_name, f"{key_name}_meta")
         except Exception as e:
             logging.warning(f"Could not fully delete '{key_name}' from keystore: {e}", exc_info=True)
@@ -337,43 +337,21 @@ class CryptoManager:
         # )
                 # return base64.b64encode(signature).decode("utf-8") # Old line
         return base64.urlsafe_b64encode(signature).decode("utf-8") # New line for URL safety
-        # --- MODIFICATION END ---
+
       
 
     @staticmethod
     def verify_signature(public_key_pem: str, signature_b64: str, payload_dict: dict) -> bool:
-        """Verifies a signature against a public key and payload."""
+        """Verifies a signature against a public key and payload using Ed25519 and Base64URL."""
         try:
             pub_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
             payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-            hasher = hashes.Hash(hashes.SHA256())
-            hasher.update(payload_json)
-            digest = hasher.finalize()
-            signature = base64.b64decode(signature_b64)
-    # --- MODIFICATION START: Switch between RSA and Ed25519 verification ---
-
-            # --- Ed25519 (New and Active) ---
-            # The verify method will raise InvalidSignature on failure. We just call it directly.
+            signature = base64.urlsafe_b64decode(signature_b64)
             pub_key.verify(signature, payload_json)
-            
-            # --- RSA-2048 (Old - Commented Out) ---
-            # hasher = hashes.Hash(hashes.SHA256())
-            # hasher.update(payload_json)
-            # digest = hasher.finalize()
-            # pub_key.verify(
-            #     signature,
-            #     digest,
-            #     padding.PSS(
-            #         mgf=padding.MGF1(hashes.SHA256()),
-            #         salt_length=padding.PSS.MAX_LENGTH,
-            #     ),
-            #     utils.Prehashed(hashes.SHA256()),
-            # )
-
-            # --- MODIFICATION END ---
-            
             return True
+        
         except (InvalidSignature, ValueError, Exception):
+
             return False
 
     def get_audit_log_path(self, issuer_id: str) -> Path:
@@ -388,7 +366,7 @@ class CryptoManager:
             return None
         try:
             with log_path.open("rb") as f:
-                # Efficiently find the last line without reading the whole file
+
                 try:
                     f.seek(-2, os.SEEK_END)
                     while f.read(1) != b"\n":
