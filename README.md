@@ -70,8 +70,9 @@ You're managing high-volume operations or need legal-grade evidence, entreprise 
 - 🤝 Priority Support — Get direct technical assistance when you need it most.
 
 
-## Need Help With Your Logo or Organizing Your Workflow?
-   You can hire me for consulting services.
+## 🎨 Need help with design, branding, or workflow setup?
+   Need help with your logo, certificate layout, or integration process?
+   You can hire me to streamline and style your setup.
  
 
 ## 🖥️ Download & Install Op'n Czami
