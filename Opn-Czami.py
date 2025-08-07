@@ -17,6 +17,7 @@
 
 # --- Standard Library Imports ---
 import base64
+import base58
 import datetime
 import ftplib
 import hashlib
@@ -63,7 +64,7 @@ except ImportError:
 from license_manager import LicenseManager, get_app_data_path
 
 # --- Application Constants ---
-APP_VERSION = "4.4.3"
+APP_VERSION = "4.4.4"
 APP_NAME = "OpnCzami"
 KEYRING_SERVICE_NAME = "OperatorIssuerApp"
 KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
@@ -150,7 +151,7 @@ class AppConfig:
     ftp_host: str = ""
     ftp_user: str = ""
     ftp_path: str = ""
-    ftp_pass_b64: str = "" 
+    ftp_pass_b64: str = ""  # Base64 encoded, used only when not in hardened mode
     ftp_auto_upload: bool = False
     hardened_security: bool = False
     enable_audit_trail: bool = False
@@ -313,11 +314,13 @@ class CryptoManager:
 
     @staticmethod
     def sign_payload(private_key_pem: str, payload_dict: dict) -> str:
-        """Signs a dictionary payload with a private key and returns a base64 signature."""
+        """Signs a dictionary payload with a private key and returns a urlsafe base64 signature."""
         priv_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
         payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
         signature = priv_key.sign(payload_json)
-        return base64.urlsafe_b64encode(signature).decode("utf-8") 
+        return base58.b58encode(signature).decode("utf-8") 
+
+      
 
     @staticmethod
     def verify_signature(public_key_pem: str, signature_b64: str, payload_dict: dict) -> bool:
@@ -510,12 +513,13 @@ class ImageProcessor:
 
         image = image_pil.copy().convert("RGBA")
         logo = logo_pil.copy().convert("RGBA")
-
+        
+        # Make logo semi-transparent
         try:
             alpha = logo.getchannel('A')
             alpha = alpha.point(lambda p: p * 0.5)
             logo.putalpha(alpha)
-        except (IndexError, ValueError): 
+        except (IndexError, ValueError): # No alpha channel or not RGBA
             pass
         
         logo.thumbnail((int(image.width * 0.25), image.height), self.resample_method)
@@ -901,7 +905,15 @@ class IssuerApp:
         if not messagebox.askokcancel("Confirm Identity Creation", f"This will create the identity '{name}' with the permanent ID:\n\n{issuer_id}\n\nProceed?"):
             return
         try:
+            # --- MODIFICATION START: Switch key generation ---
+
+            # --- Ed25519 (New and Active) ---
             priv_key = ed25519.Ed25519PrivateKey.generate()
+
+            # --- RSA-2048 (Old - Commented Out) ---
+            # priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            
+            # --- MODIFICATION END ---
             priv_key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode("utf-8")
             pub_key_pem = priv_key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode("utf-8")
             url_path = url_path.removesuffix("/") + "/"
@@ -1021,16 +1033,19 @@ class IssuerApp:
                 
                 payload_dict = {"imgId": upload_filename, "msg": summary_msg, "h": file_hash}
                 
-                # This signature is now URL-safe because we already updated the CryptoManager
+
                 signature_b64 = self.crypto_manager.sign_payload(self.active_issuer_data["priv_key_pem"], payload_dict)
                 
                 if self.config.enable_audit_trail and self.license_manager.is_feature_enabled("audit"):
                     log_details = {"filename": upload_filename, "message": summary_msg, "file_hash": file_hash}
                     self.crypto_manager.log_event(self.active_issuer_id, self.active_issuer_data["priv_key_pem"], "SIGN_SUCCESS", log_details)
                 
-                payload_b64 = base64.urlsafe_b64encode(json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8")
+                payload_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
+                payload_b64 = base58.b58encode(payload_bytes).decode("utf-8")
 
                 final_qr_string = f"{self.active_issuer_id}-{payload_b64}-{signature_b64}"
+                
+
                 
                 doc_logo_path = resource_path("legatokey.png")
                 document_logo_pil = Image.open(doc_logo_path) if doc_logo_path.exists() else None
@@ -1185,6 +1200,7 @@ class IssuerApp:
                                     "Hardened Security is ON.\n\nTo create a complete backup, the private key will be temporarily moved from the OS Keychain to a file. It will be moved back and the file securely deleted when the backup is finished.\n\nProceed?"):
                 return
 
+        # A robust try/finally block to ensure security is always restored
         try:
             # --- Temporarily Disable Hardened Security if needed ---
             if is_hardened:
@@ -2510,4 +2526,3 @@ if __name__ == "__main__":
     root.mainloop()
 
     logging.info("================ Application Closed ================\n")
-
