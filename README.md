@@ -71,8 +71,8 @@ You're managing high-volume operations or need legal-grade evidence, entreprise 
 
 
 ## 🎨 Need help with design, branding, or workflow setup?
-   Need help with your logo, certificate layout, or integration process?
-   You can hire me to streamline and style your setup.
+
+   Need help with your logo, certificate layout, or integration process? You can hire me to streamline and style your setup.
  
 
 ## 🖥️ Download & Install Op'n Czami
