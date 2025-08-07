@@ -59,14 +59,16 @@ Op'n Czami is **fully open source**. This means:
 **No fees, no subscriptions. Just freedom.**
 
 
-## ⚙️ Optional Pro Tools (🧩 Paid License yet still open source)
+## ⚙️ Extra Pro Tools: (🧩 Paid License yet still open source)
 
-If you're managing high-volume operations or need legal-grade evidence, I've got you covered.
+You're managing high-volume operations or need legal-grade evidence, entreprise log? I've got you covered.
 
 ### Annual License Tools (à la carte)
 - 🧾 **Batch Signing** — Sign hundreds of certificates in minutes.
 - ⛓️ **Tamper-Evident Audit Trail**: When enabled, the application maintains a cryptographically chained log of every signing and upload event. Similar to a blockchain, any attempt to tamper with the log is immediately detectable.
-- 🖋️ **Watermarking Tool** — Add your brand or logo automatically.
+- 🖋️ **Watermarking Tool** — Add your brand or logo automatically to images
+🤝 Priority Support — Get direct technical assistance when you need it most.
+
 
 ## Need Help With Your Logo or Organizing Your Workflow?
    You can hire me for consulting services.
