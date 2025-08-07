@@ -93,7 +93,8 @@ You can install **Op'n Czami** on Windows using the official installer:
 
 ### 🍎 For macOS Users (Apple Silicon)
 ❗macOS Build Notice:
-Due to performance issues caused by Apple's handling of Python GUI apps, I’ve decided to stop officially supporting the macOS build. You can still build it yourself or use the provided .dmg, but I recommend running the Windows version via an emulator (like UTM or Parallels) for a smoother experience.
+Due to performance issues caused by Apple's handling of Python GUI apps, I’ve decided to stop officially supporting the macOS build.
+You can still build it yourself from the source but I remove the pre compiled .dmg and  I recommend running the Windows version via an emulator (like UTM or Parallels) for a smoother experience.
 ➡️ [Download for macOS (.dmg)](https://github.com/Frederic-LM/Opn-Czami/releases/download/MacOSDmg/opnczami.dmg)
 
 1. Download the `.dmg` file.
