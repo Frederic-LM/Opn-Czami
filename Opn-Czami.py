@@ -64,7 +64,7 @@ except ImportError:
 from license_manager import LicenseManager, get_app_data_path
 
 # --- Application Constants ---
-APP_VERSION = "4.4.3"
+APP_VERSION = "4.4.4"
 APP_NAME = "OpnCzami"
 KEYRING_SERVICE_NAME = "OperatorIssuerApp"
 KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
@@ -2526,4 +2526,3 @@ if __name__ == "__main__":
     root.mainloop()
 
     logging.info("================ Application Closed ================\n")
-
