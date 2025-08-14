@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see
 # <https://www.gnu.org/licenses/>.
-# VERSION = "4.5.0" Lkey redesign
+# VERSION = "4.5.0" Lky redesign
 
 
 # --- Standard Library Imports ---
@@ -2575,3 +2575,4 @@ if __name__ == "__main__":
     root.mainloop()
 
     logging.info("================ Application Closed ================\n")
+
