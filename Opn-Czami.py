@@ -14,6 +14,8 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see
 # <https://www.gnu.org/licenses/>.
+# VERSION = "4.5.0" Lkey redesign
+
 
 # --- Standard Library Imports ---
 import base64
@@ -24,6 +26,7 @@ import hashlib
 import io
 import json
 import logging
+import struct
 import os
 import random
 import shutil
@@ -64,7 +67,7 @@ except ImportError:
 from license_manager import LicenseManager, get_app_data_path
 
 # --- Application Constants ---
-APP_VERSION = "4.4.4"
+APP_VERSION = "4.5.0"
 APP_NAME = "OpnCzami"
 KEYRING_SERVICE_NAME = "OperatorIssuerApp"
 KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
@@ -86,8 +89,7 @@ LOG_DIR = APP_DATA_DIR / "logs"
 APP_LOG_FILE = LOG_DIR / "opn-czami-app.log"
 
 # --- Directory Creation ---
-(APP_DOCS_DIR / "Signed_Legato_Keys").mkdir(parents=True, exist_ok=True)
-(APP_DOCS_DIR / "Signed_Proofs").mkdir(parents=True, exist_ok=True)
+(APP_DOCS_DIR / "Signed_Legato_Keys").mkdir(parents=True, exist_ok=True) # Changed from Signed_Proofs
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -126,8 +128,8 @@ class FTPMode(Enum):
 
 class UploadButtonState(Enum):
     """Enumeration for the states of the main upload button."""
-    INITIAL = ("🚀 Upload Fingerprinted Image", SECONDARY, "disabled")
-    READY = ("🚀 Upload Fingerprinted Image", PRIMARY, "normal")
+    INITIAL = ("🚀 Upload LKey", SECONDARY, "disabled")
+    READY = ("🚀 Upload LKey", PRIMARY, "normal")
     UPLOADING = ("Uploading...", WARNING, "disabled")
     SUCCESS = ("Upload Successful!", SUCCESS, "normal")
     FAILURE = ("Upload Failed! (Retry)", DANGER, "normal")
@@ -141,13 +143,11 @@ class FormState(Enum):
 @dataclass
 class AppConfig:
     """Holds the application's user-configurable settings."""
-    randomize_proof_name: bool = False
-    make_local_copy: bool = True
+    randomize_lkey_name: bool = False
     apply_watermark: bool = False
     apply_logo_watermark: bool = False
     watermark_text: str = "SIGNED"
-    qr_save_path: str = ""
-    proof_save_path: str = ""
+    legato_files_save_path: str = ""
     ftp_host: str = ""
     ftp_user: str = ""
     ftp_path: str = ""
@@ -157,18 +157,15 @@ class AppConfig:
     enable_audit_trail: bool = False
 
     def __post_init__(self):
-        """Set default save paths if they are not provided."""
-        if not self.qr_save_path:
-            self.qr_save_path = str(APP_DOCS_DIR / "Signed_Legato_Keys")
-        if not self.proof_save_path:
-            self.proof_save_path = str(APP_DOCS_DIR / "Signed_Proofs")
+        """Set default save path if it is not provided."""
+        if not self.legato_files_save_path:
+            self.legato_files_save_path = str(APP_DOCS_DIR / "Legato_Keys")
 
 
 # --- Helper Functions ---
 def resource_path(relative_path: str) -> Path:
     """ Get absolute path to resource, works for dev and for PyInstaller. """
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = Path(sys._MEIPASS)
     except AttributeError:
         base_path = Path(__file__).parent.resolve()
@@ -291,6 +288,29 @@ class CryptoManager:
 
     def delete_ftp_password(self, issuer_id: str):
         self._delete_from_keystore(f"{issuer_id}_ftp")
+    
+    @staticmethod
+    def sign_raw_bytes(private_key_pem: str, data_bytes: bytes) -> str:
+        """Signs a raw byte payload with an Ed25519 private key and returns Base58."""
+        priv_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+        signature = priv_key.sign(data_bytes)
+        return base58.b58encode(signature).decode("utf-8")    
+    
+    @staticmethod
+    def assemble_lky_file(image_bytes: bytes, payload_dict: dict, manifest_dict: dict) -> bytes:
+        """Assembles the final .lky file from its constituent parts."""
+        is_jpeg = image_bytes.startswith(b'\xff\xd8')
+        if not is_jpeg:
+            logging.warning("POLYGLOT WARNING: Image data does not start with JPEG magic bytes.")
+        try:
+            payload_json_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
+            manifest_json_bytes = json.dumps(manifest_dict, separators=(",", ":")).encode("utf-8")
+            manifest_length = len(manifest_json_bytes)
+            manifest_length_bytes = struct.pack('>I', manifest_length)
+            return image_bytes + payload_json_bytes + manifest_json_bytes + manifest_length_bytes
+        except Exception as e:
+            logging.error(f"Failed during LKY file assembly: {e}", exc_info=True)
+            return None
 
     @staticmethod
     def generate_id_from_name(name: str) -> str:
@@ -298,18 +318,39 @@ class CryptoManager:
         return hashlib.sha256(name.lower().strip().encode("utf-8")).hexdigest()[:12]
 
     @staticmethod
-    def calculate_file_hash(filepath: Path) -> Union[str, None]:
-        """Calculates the SHA-256 hash of a file, returning the first 32 chars."""
-        if not filepath.exists():
-            return None
+    def calculate_file_hash(filepath_or_buffer) -> Union[str, None]:
+        """
+        Calculates the SHA-256 hash of a file path OR an in-memory buffer.
+        Returns the first 32 chars of the hex digest.
+        """
         hasher = hashlib.sha256()
         try:
-            with filepath.open("rb") as f:
-                while chunk := f.read(4096):
+            # Check if the input is a file path object from the 'pathlib' library
+            if isinstance(filepath_or_buffer, Path):
+                if not filepath_or_buffer.exists(): 
+                    logging.error(f"Hash calculation failed: Path does not exist at '{filepath_or_buffer}'")
+                    return None
+                with filepath_or_buffer.open("rb") as f:
+                    while chunk := f.read(4096):
+                        hasher.update(chunk)
+            
+            # Check if the input is an in-memory, file-like object (like io.BytesIO)
+            elif hasattr(filepath_or_buffer, 'read'):
+                filepath_or_buffer.seek(0) # IMPORTANT: Rewind the buffer to the beginning
+                while chunk := filepath_or_buffer.read(4096):
                     hasher.update(chunk)
+                filepath_or_buffer.seek(0) # Rewind again for good measure in case it's reused
+            
+            # If it's neither, we can't process it
+            else:
+                show_error("Hash Error", f"Invalid input type for hash calculation: {type(filepath_or_buffer)}")
+                return None
+                
             return hasher.hexdigest()[:32]
-        except OSError as e:
-            show_error("File Hash Error", f"Error calculating hash for {filepath.name}: {e}")
+            
+        except Exception as e:
+            show_error("File Hash Error", f"An error occurred during hash calculation: {e}")
+            logging.error(f"Error in calculate_file_hash: {e}", exc_info=True)
             return None
 
     @staticmethod
@@ -353,7 +394,7 @@ class CryptoManager:
                     f.seek(-2, os.SEEK_END)
                     while f.read(1) != b"\n":
                         f.seek(-2, os.SEEK_CUR)
-                except OSError: # Handles files with only one line
+                except OSError: 
                     f.seek(0)
                 last_line = f.readline().decode("utf-8").strip()
 
@@ -392,7 +433,7 @@ class CryptoManager:
             
             logging.info(f"Logged event '{event_type}' to audit trail.")
 
-            # Update the 'head' hash file for quick verification
+            
             try:
                 head_hash_path = log_path.with_suffix(".head")
                 entry_json = json.dumps(log_entry, separators=(",", ":")).encode("utf-8")
@@ -619,14 +660,14 @@ class IssuerApp:
         self.all_issuer_data = {}
         self.system_is_verified = False
         self.is_generating = False
-        self.selected_proof_file_path = None
+        self.selected_image_file_path = None
         self.prepared_upload_path = None
         self.last_signed_payload = None
         self.upload_button_state = UploadButtonState.INITIAL
         self.qr_image_pil = None
         self.issuer_qr_image_pil = None
-        self.proof_image_pil = None
-        self.proof_image_tk = None
+        self.lkey_image_pil = None
+        self.lkey_image_tk = None
         self.original_status_logo_pil = None
         self.logo_path = None
         self.url_path_var = ttk.StringVar(value="https://")
@@ -637,15 +678,13 @@ class IssuerApp:
         self.ftp_path_var = ttk.StringVar()
         self.show_pass_var = ttk.BooleanVar(value=False)
         self.watermark_text_var = ttk.StringVar()
-        self.qr_save_path_var = ttk.StringVar()
-        self.proof_save_path_var = ttk.StringVar()
+        self.legato_files_save_path_var = ttk.StringVar()
         self.hardened_security_var = ttk.BooleanVar()
         self.enable_audit_trail_var = ttk.BooleanVar()
         self.ftp_auto_upload_var = ttk.BooleanVar()
         self.apply_watermark_var = ttk.BooleanVar()
         self.apply_logo_watermark_var = ttk.BooleanVar()
-        self.randomize_proof_name_var = ttk.BooleanVar()
-        self.make_local_copy_var = ttk.BooleanVar()
+        self.randomize_lkey_name_var = ttk.BooleanVar()
         self.ftp_form_state = FormState.PRISTINE
 
     def _init_ui(self):
@@ -792,8 +831,7 @@ class IssuerApp:
         self.config.ftp_user = self.ftp_user_var.get().strip()
         self.config.ftp_path = self.ftp_path_var.get().strip()
         self.config.watermark_text = self.watermark_text_var.get().strip()
-        self.config.qr_save_path = self.qr_save_path_var.get()
-        self.config.proof_save_path = self.proof_save_path_var.get()
+        self.config.legato_files_save_path = self.legato_files_save_path_var.get()
         if not self.hardened_security_var.get():
             password = self.ftp_pass_var.get().encode("utf-8")
             self.config.ftp_pass_b64 = base64.b64encode(password).decode("utf-8")
@@ -802,8 +840,7 @@ class IssuerApp:
         self.config.ftp_auto_upload = self.ftp_auto_upload_var.get()
         self.config.apply_watermark = self.apply_watermark_var.get()
         self.config.apply_logo_watermark = self.apply_logo_watermark_var.get()
-        self.config.randomize_proof_name = self.randomize_proof_name_var.get()
-        self.config.make_local_copy = self.make_local_copy_var.get()
+        self.config.randomize_lkey_name = self.randomize_lkey_name_var.get()
 
     def _gather_settings_data_for_db(self) -> dict:
         ftp_settings = {
@@ -813,10 +850,10 @@ class IssuerApp:
         if not self.config.hardened_security:
             ftp_settings["pass_b64"] = self.config.ftp_pass_b64
         return {
-            "randomize_proof_name": self.config.randomize_proof_name, "make_local_copy": self.config.make_local_copy,
+            "randomize_lkey_name": self.config.randomize_lkey_name,
             "apply_watermark": self.config.apply_watermark, "apply_logo_watermark": self.config.apply_logo_watermark,
-            "watermark_text": self.config.watermark_text, "qr_save_path": self.config.qr_save_path,
-            "proof_save_path": self.config.proof_save_path, "ftp_settings": ftp_settings,
+            "watermark_text": self.config.watermark_text, "legato_files_save_path": self.config.legato_files_save_path,
+            "ftp_settings": ftp_settings,
             "enable_audit_trail": self.config.enable_audit_trail,
         }
 
@@ -880,7 +917,7 @@ class IssuerApp:
         self.issuer_qr_image_pil = None
         self.active_issuer_contact_info = {}
         self.all_issuer_data = {}
-        self.clear_proof_image_display()
+        self.clear_lkey_image_display()
         self.message_text.delete("1.0", "end")
         self.qr_display_label.config(image="")
         self.notebook.select(0)
@@ -905,15 +942,7 @@ class IssuerApp:
         if not messagebox.askokcancel("Confirm Identity Creation", f"This will create the identity '{name}' with the permanent ID:\n\n{issuer_id}\n\nProceed?"):
             return
         try:
-            # --- MODIFICATION START: Switch key generation ---
-
-            # --- Ed25519 (New and Active) ---
             priv_key = ed25519.Ed25519PrivateKey.generate()
-
-            # --- RSA-2048 (Old - Commented Out) ---
-            # priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            
-            # --- MODIFICATION END ---
             priv_key_pem = priv_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode("utf-8")
             pub_key_pem = priv_key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode("utf-8")
             url_path = url_path.removesuffix("/") + "/"
@@ -970,7 +999,7 @@ class IssuerApp:
             show_error("Identity Creation Error", f"Failed to create identity: {e}")
 
     # --- Document Signing ---
-    def _generate_document_qr_threaded_worker(self, proof_path: Path, summary_msg: str):
+    def _generate_document_qr_threaded_worker(self, image_path: Path, summary_msg: str):
             """
             Worker function for the 'Fingerprint, Sign & Save' process, run in a background thread.
             Handles UI updates by scheduling them back to the main thread.
@@ -981,7 +1010,7 @@ class IssuerApp:
                 self.root.after(0, self.upload_progress_bar.start)
 
                 # 2. Core Logic: Perform signing and (if auto-upload is on) the upload
-                is_successful_signing, upload_performed_and_successful, result_message = self._sign_single_document(proof_path, summary_msg)
+                is_successful_signing, upload_performed_and_successful, result_message = self._sign_single_document(image_path, summary_msg)
 
                 if is_successful_signing:
                     # 3. UI: Update UI for success (scheduled from background)
@@ -1007,77 +1036,125 @@ class IssuerApp:
                 self.root.after(0, lambda: self.generate_qr_button.config(state=NORMAL))
                 self.is_generating = False # Reset flag for next operation
         
-    def _sign_single_document(self, proof_path: Path, summary_msg: str) -> tuple[bool, bool, str]:
-            """
-            Signs a document and optionally performs auto-upload.
-            Returns (overall_success: bool, auto_upload_successful: bool, message: str).
-            Does NOT update UI directly.
-            """
-            try:
-                apply_text_watermark = self.config.apply_watermark and self.license_manager.is_feature_enabled("watermark")
-                apply_logo_watermark = self.config.apply_logo_watermark and self.license_manager.is_feature_enabled("watermark")
-                source_image = Image.open(proof_path)
-                watermarked_img = self.image_processor.apply_text_watermark(source_image, self.config.watermark_text, apply_text_watermark)
-                final_proof_image = self.image_processor.apply_logo_watermark(watermarked_img, self.original_status_logo_pil, apply_logo_watermark).convert("RGB")
-                temp_dir = APP_DATA_DIR / "temp_upload"
-                temp_dir.mkdir(exist_ok=True, parents=True)
-                sanitized_base = self.sanitize_filename(proof_path.stem)
-                suffix = f"-{''.join(random.choices(string.ascii_lowercase + string.digits, k=4))}-Proof" if self.config.randomize_proof_name else "-Proof"
-                upload_filename = f"{sanitized_base}{suffix}{proof_path.suffix}"
-                prepared_upload_path = temp_dir / upload_filename
-                image_format = "JPEG" if proof_path.suffix.lower() in [".jpg", ".jpeg"] else "PNG"
-                final_proof_image.save(prepared_upload_path, format=image_format, quality=95)
-                
-                file_hash = self.crypto_manager.calculate_file_hash(prepared_upload_path)
-                if not file_hash: return False, False, "Could not calculate proof file hash."
-                
-                payload_dict = {"imgId": upload_filename, "msg": summary_msg, "h": file_hash}
-                
-
-                signature_b64 = self.crypto_manager.sign_payload(self.active_issuer_data["priv_key_pem"], payload_dict)
-                
-                if self.config.enable_audit_trail and self.license_manager.is_feature_enabled("audit"):
-                    log_details = {"filename": upload_filename, "message": summary_msg, "file_hash": file_hash}
-                    self.crypto_manager.log_event(self.active_issuer_id, self.active_issuer_data["priv_key_pem"], "SIGN_SUCCESS", log_details)
-                
-                payload_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-                payload_b64 = base58.b58encode(payload_bytes).decode("utf-8")
-
-                final_qr_string = f"{self.active_issuer_id}-{payload_b64}-{signature_b64}"
-                
-
-                
-                doc_logo_path = resource_path("legatokey.png")
-                document_logo_pil = Image.open(doc_logo_path) if doc_logo_path.exists() else None
-                qr_image_pil = self.image_processor.generate_qr_with_logo(final_qr_string, document_logo_pil, sizing_ratio=0.40)
-                qr_save_dir = Path(self.config.qr_save_path)
-                qr_save_dir.mkdir(exist_ok=True, parents=True)
-                qr_save_path = qr_save_dir / f"{prepared_upload_path.stem}-QR.png"
-                qr_image_pil.save(qr_save_path)
-                
-                self.qr_image_pil = qr_image_pil
-                self.prepared_upload_path = prepared_upload_path
-                self.last_signed_payload = f"{upload_filename}|{summary_msg}|{file_hash}"
-
-                if self.config.make_local_copy:
-                    proof_save_dir = Path(self.config.proof_save_path)
-                    proof_save_dir.mkdir(exist_ok=True, parents=True)
-                    shutil.copy(prepared_upload_path, proof_save_dir / upload_filename)
-                
-                # --- AUTO-UPLOAD LOGIC  ---
-                is_auto_upload_successful = False
-                if self.config.ftp_auto_upload:
-                    is_auto_upload_successful, upload_result_msg = self._upload_single_file(prepared_upload_path)
-                    if not is_auto_upload_successful:
-                        return False, False, f"Auto-upload failed: {upload_result_msg}"
-                return True, is_auto_upload_successful, "Document signed and processed successfully."
+    def _sign_single_document(self, image_path: Path, summary_msg: str) -> tuple[bool, bool, str]:
+        """
+        Creates a unified LKY file and a valid 3-part QR code that points to it.
+        The LKY file contains JPEG image data and has a .lky extension.
+        """
+        try:
+            # --- Image Processing ---
+            apply_text_watermark = self.config.apply_watermark and self.license_manager.is_feature_enabled("watermark")
+            apply_logo_watermark = self.config.apply_logo_watermark and self.license_manager.is_feature_enabled("watermark")
+            source_image = Image.open(image_path)
+            watermarked_img = self.image_processor.apply_text_watermark(source_image, self.config.watermark_text, apply_text_watermark)
+            # Final image for the LKey, always converted to RGB for JPEG saving
+            final_lkey_image = self.image_processor.apply_logo_watermark(watermarked_img, self.original_status_logo_pil, apply_logo_watermark).convert("RGB")
             
-            except Exception as e:
-                logging.error(f"Error during document signing: {e}", exc_info=True)
-                return False, False, f"Signing failed due to an unexpected error: {e}"
+            # --- File Naming and Path Setup ---
+            temp_dir = APP_DATA_DIR / "temp_upload"
+            temp_dir.mkdir(exist_ok=True, parents=True)
+            
+            sanitized_base = self.sanitize_filename(image_path.stem)
+            suffix = f"-{''.join(random.choices(string.ascii_lowercase + string.digits, k=4))}-LKey" if self.config.randomize_lkey_name else "-LKey"
+            upload_filename_stem = f"{sanitized_base}{suffix}"
+            
+            # 1. Define the final filename with a .lky extension.
+            final_lkey_filename = f"{upload_filename_stem}.lky"
+            
+            image_buffer = io.BytesIO()
+            # 2. Always save the internal image data as JPEG for consistency and standardization.
+            image_format = "JPEG"
+            image_mime_type = "image/jpeg"
+            final_lkey_image.save(image_buffer, format=image_format, quality=95)
+            image_bytes = image_buffer.getvalue()
 
+            # --- LKey File Assembly  ---
+            
+            # 3a. Use a temporary file to safely calculate the standalone image hash.
+            import uuid
+            temp_image_path = temp_dir / f"temp_hash_{uuid.uuid4().hex}.tmp"
+            try:
+                temp_image_path.write_bytes(image_bytes)
+                image_hash_internal = self.crypto_manager.calculate_file_hash(temp_image_path)
+                if not image_hash_internal: return False, False, "Could not calculate internal image hash."
+            finally:
+                if temp_image_path.exists(): temp_image_path.unlink()
+            
+            lky_payload_dict = {"imgId": final_lkey_filename, "msg": summary_msg, "h": image_hash_internal}
+            lky_payload_bytes = json.dumps(lky_payload_dict, separators=(",", ":")).encode("utf-8")
+            
+            # 3b. Create the LKey's signature by signing the RAW `image_bytes + payload_bytes`.
+            data_to_sign_lky = image_bytes + lky_payload_bytes
+            priv_key = serialization.load_pem_private_key(self.active_issuer_data["priv_key_pem"].encode("utf-8"), password=None)
+            signature = priv_key.sign(data_to_sign_lky)
+            lky_signature_b58 = base58.b58encode(signature).decode("utf-8")
+
+            # 3c. Assemble the complete polyglot LKY file.
+            manifest_dict = {
+                "signature": lky_signature_b58, "issuerId": self.active_issuer_id,
+                "imageLength": len(image_bytes), "payloadLength": len(lky_payload_bytes),
+                "imageMimeType": image_mime_type
+            }
+            lky_file_bytes = self.crypto_manager.assemble_lky_file(image_bytes, lky_payload_dict, manifest_dict)
+            if not lky_file_bytes: return False, False, "Failed to assemble .lky file."
+            
+            prepared_upload_path = temp_dir / final_lkey_filename
+            prepared_upload_path.write_bytes(lky_file_bytes)
+
+            # --- QR Code Generation  ---
+
+            # 4a. Create the QR code's payload, containing the hash of the ENTIRE LKY file.
+            final_file_hash = self.crypto_manager.calculate_file_hash(prepared_upload_path)
+            if not final_file_hash: return False, False, "Could not calculate final file hash."
+            
+            qr_payload_dict = {"imgId": final_lkey_filename, "msg": summary_msg, "h": final_file_hash}
+
+            # 4b. Create the QR code's signature for its own payload.
+            qr_signature_b58 = self.crypto_manager.sign_payload(self.active_issuer_data["priv_key_pem"], qr_payload_dict)
+            
+            # 4c. Create the final 3-PART QR string for the mobile app parser.
+            qr_payload_b58 = base58.b58encode(json.dumps(qr_payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8")
+            final_qr_string = f"{self.active_issuer_id}-{qr_payload_b58}-{qr_signature_b58}"
+            
+            # --- Finalization and Saving ---
+
+            if self.config.enable_audit_trail and self.license_manager.is_feature_enabled("audit"):
+                log_details = {"filename": final_lkey_filename, "message": summary_msg, "file_hash": final_file_hash}
+                self.crypto_manager.log_event(self.active_issuer_id, self.active_issuer_data["priv_key_pem"], "SIGN_UNIFIED_SUCCESS", log_details)
+
+            doc_logo_path = resource_path("legatokey.png")
+            document_logo_pil = Image.open(doc_logo_path) if doc_logo_path.exists() else None
+            qr_image_pil = self.image_processor.generate_qr_with_logo(final_qr_string, document_logo_pil, sizing_ratio=0.40)
+            
+            # Create date-based subdirectory for local saves
+            now = datetime.datetime.now()
+            local_save_dir = Path(self.config.legato_files_save_path) / f"{now.year}" / f"{now.month:02d}"
+            local_save_dir.mkdir(parents=True, exist_ok=True)
+            
+            qr_save_path = local_save_dir / f"{upload_filename_stem}-QR.png"
+            qr_image_pil.save(qr_save_path)
+            
+            # Save local copy of the .lky file (now mandatory)
+            shutil.copy(prepared_upload_path, local_save_dir / final_lkey_filename)
+            
+            self.qr_image_pil = qr_image_pil
+            self.prepared_upload_path = prepared_upload_path
+            self.last_signed_payload = f"{final_lkey_filename}|{summary_msg}|{final_file_hash}"
+
+            is_auto_upload_successful = False
+            if self.config.ftp_auto_upload:
+                is_auto_upload_successful, upload_result_msg = self._upload_single_file(prepared_upload_path)
+                if not is_auto_upload_successful: return False, False, f"Auto-upload failed: {upload_result_msg}"
+
+            return True, is_auto_upload_successful, "LKey signed and processed successfully."
+        
+        except Exception as e:
+            logging.error(f"Error during document signing: {e}", exc_info=True)
+            return False, False, f"Signing failed due to an unexpected error: {e}"
+        
+        
     def generate_document_qr(self):
-        if self.is_generating or not self.selected_proof_file_path: return
+        if self.is_generating or not self.selected_image_file_path: return
         self.is_generating = True
         self.generate_qr_button.config(state=DISABLED)
         
@@ -1090,7 +1167,7 @@ class IssuerApp:
         
         # Launch the heavy processing in a new thread
         threading.Thread(target=self._generate_document_qr_threaded_worker, 
-                         args=(self.selected_proof_file_path, summary_msg), 
+                         args=(self.selected_image_file_path, summary_msg), 
                          daemon=True).start()
 
     # --- Data Loading and UI Configuration ---
@@ -1132,13 +1209,11 @@ class IssuerApp:
         s = self.active_issuer_data.get("settings", {})
         ftp_settings = s.get("ftp_settings", {})
         self.config = AppConfig(
-            randomize_proof_name=s.get("randomize_proof_name", False),
-            make_local_copy=s.get("make_local_copy", True),
+            randomize_lkey_name=s.get("randomize_lkey_name", False),
             apply_watermark=s.get("apply_watermark", False),
             apply_logo_watermark=s.get("apply_logo_watermark", False),
             watermark_text=s.get("watermark_text", "SIGNED"),
-            qr_save_path=s.get("qr_save_path", ""),
-            proof_save_path=s.get("proof_save_path", ""),
+            legato_files_save_path=s.get("legato_files_save_path", ""),
             ftp_host=ftp_settings.get("host", ""),
             ftp_user=ftp_settings.get("user", ""),
             ftp_path=ftp_settings.get("path", ""),
@@ -1154,8 +1229,7 @@ class IssuerApp:
         self.ftp_user_var.set(self.config.ftp_user)
         self.ftp_path_var.set(self.config.ftp_path)
         self.watermark_text_var.set(self.config.watermark_text)
-        self.qr_save_path_var.set(self.config.qr_save_path)
-        self.proof_save_path_var.set(self.config.proof_save_path)
+        self.legato_files_save_path_var.set(self.config.legato_files_save_path)
         password = ""
         if self.config.hardened_security:
             password = self.crypto_manager.load_ftp_password(self.active_issuer_id) or ""
@@ -1169,8 +1243,7 @@ class IssuerApp:
         self.ftp_auto_upload_var.set(self.config.ftp_auto_upload)
         self.apply_watermark_var.set(self.config.apply_watermark)
         self.apply_logo_watermark_var.set(self.config.apply_logo_watermark)
-        self.randomize_proof_name_var.set(self.config.randomize_proof_name)
-        self.make_local_copy_var.set(self.config.make_local_copy)
+        self.randomize_lkey_name_var.set(self.config.randomize_lkey_name)
         self.ftp_form_state = FormState.PRISTINE
         if hasattr(self, "save_and_upload_button"):
             self.save_and_upload_button.config(state=DISABLED)
@@ -1251,14 +1324,9 @@ class IssuerApp:
                     show_error("CRITICAL SECURITY FAILURE",
                             "Failed to move the private key back to the OS Keychain. The key is currently stored insecurely on disk. Please re-enable Hardened Security manually from the Backup & Security tab immediately.")
 
-    def browse_for_qr_save_path(self):
-        if new_path := filedialog.askdirectory(title="Select Folder for QR Code Saving"):
-            self.qr_save_path_var.set(new_path)
-            self.save_settings()
-
-    def browse_for_proof_save_path(self):
-        if new_path := filedialog.askdirectory(title="Select Folder for Local Proof Copies"):
-            self.proof_save_path_var.set(new_path)
+    def browse_for_legato_files_save_path(self):
+        if new_path := filedialog.askdirectory(title="Select Folder for Local File Saving"):
+            self.legato_files_save_path_var.set(new_path)
             self.save_settings()
 
     def on_auto_upload_toggle(self):
@@ -1279,12 +1347,6 @@ class IssuerApp:
         is_licensed = self.license_manager.is_feature_enabled("watermark")
         state = NORMAL if self.apply_watermark_var.get() and is_licensed else DISABLED
         if hasattr(self, "watermark_entry"): self.watermark_entry.config(state=state)
-
-    def toggle_proof_path_state(self):
-        state = NORMAL if self.make_local_copy_var.get() else DISABLED
-        if hasattr(self, "proof_path_entry"):
-            self.proof_path_entry.config(state="readonly" if state == NORMAL else DISABLED)
-            self.proof_path_browse_btn.config(state=state)
 
     def update_auto_upload_indicator(self):
         if hasattr(self, "auto_upload_indicator_label"):
@@ -1308,18 +1370,18 @@ class IssuerApp:
         self.qr_display_label.config(image=qr_tk)
         self.qr_display_label.image = qr_tk
 
-    def update_proof_display(self, pil_image: Image.Image):
-        display_proof = pil_image.copy()
-        display_proof.thumbnail((600, 480), self.image_processor.resample_method)
-        self.proof_image_tk = ImageTk.PhotoImage(display_proof.convert("RGB"))
-        self.proof_image_display_label.config(image=self.proof_image_tk)
-        self.proof_image_display_label.image = self.proof_image_tk
+    def update_lkey_display(self, pil_image: Image.Image):
+        display_lkey = pil_image.copy()
+        display_lkey.thumbnail((600, 480), self.image_processor.resample_method)
+        self.lkey_image_tk = ImageTk.PhotoImage(display_lkey.convert("RGB"))
+        self.lkey_image_display_label.config(image=self.lkey_image_tk)
+        self.lkey_image_display_label.image = self.lkey_image_tk
 
-    def clear_proof_image_display(self):
-        if hasattr(self, 'proof_image_display_label'):
-            self.proof_image_display_label.config(image="")
-            self.proof_image_pil = None
-            self.proof_image_tk = None
+    def clear_lkey_image_display(self):
+        if hasattr(self, 'lkey_image_display_label'):
+            self.lkey_image_display_label.config(image="")
+            self.lkey_image_pil = None
+            self.lkey_image_tk = None
 
     def update_issuer_qr_display(self):
         if not self.active_issuer_id:
@@ -1334,23 +1396,23 @@ class IssuerApp:
         self.issuer_qr_display_label.config(image=img_tk)
         self.issuer_qr_display_label.image = img_tk
 
-    def browse_and_set_proof_file(self):
+    def browse_and_set_image_file(self):
         if not self.reset_upload_button_state(): return
-        if not (filepath_str := filedialog.askopenfilename(title="Select proof file", filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp"), ("All files", "*.*")])):
-            self.clear_proof_image_display()
+        if not (filepath_str := filedialog.askopenfilename(title="Select image file", filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp"), ("All files", "*.*")])):
+            self.clear_lkey_image_display()
             self.doc_id_helper_label.config(text="File selection cancelled.")
             self.generate_qr_button.config(state=DISABLED)
-            self.selected_proof_file_path = None
+            self.selected_image_file_path = None
             return
-        self.selected_proof_file_path = Path(filepath_str)
-        self.doc_id_helper_label.config(text=f"Selected: {self.selected_proof_file_path.name}")
+        self.selected_image_file_path = Path(filepath_str)
+        self.doc_id_helper_label.config(text=f"Selected: {self.selected_image_file_path.name}")
         try:
-            self.proof_image_pil = Image.open(self.selected_proof_file_path)
-            self.update_proof_display(self.proof_image_pil)
+            self.lkey_image_pil = Image.open(self.selected_image_file_path)
+            self.update_lkey_display(self.lkey_image_pil)
             self.generate_qr_button.config(state=NORMAL)
         except Exception as e:
             show_error("Image Load Error", f"Could not load image: {e}")
-            self.clear_proof_image_display()
+            self.clear_lkey_image_display()
 
     def get_full_remote_path(self) -> Union[str, None]:
         if not self.active_issuer_data: return None
@@ -1456,7 +1518,7 @@ class IssuerApp:
             
             return is_success, result
 
-    def upload_proof_file_threaded(self):
+    def upload_lkey_file_threaded(self):
         if not self.prepared_upload_path or self.upload_button_state == UploadButtonState.UPLOADING: return
         self.upload_button_state = UploadButtonState.UPLOADING
         self.update_upload_button_display()
@@ -1469,15 +1531,15 @@ class IssuerApp:
         Updates the UI elements after a document has been successfully signed
         and potentially auto-uploaded.
         """
-        # Ensure QR and Proof displays are updated
+        # Ensure QR and LKey displays are updated
         self.update_qr_display(self.qr_image_pil)
-        final_proof_image = Image.open(self.prepared_upload_path)
-        proof_with_overlay = self.image_processor.overlay_checkmark(final_proof_image)
-        self.update_proof_display(proof_with_overlay)
+        final_lkey_image = Image.open(self.prepared_upload_path)
+        lkey_with_overlay = self.image_processor.overlay_checkmark(final_lkey_image)
+        self.update_lkey_display(lkey_with_overlay)
 
         # Show all action buttons initially (folder buttons are always useful)
         self._show_qr_action_buttons()
-        self.proof_folder_button.config(state=NORMAL)
+        self.lkey_folder_button.config(state=NORMAL)
         self.qr_folder_button.config(state=NORMAL)
 
         # Handle Print/Email buttons and main Upload button based on auto-upload status
@@ -1499,15 +1561,15 @@ class IssuerApp:
             and potentially auto-uploaded, or prepared for manual upload.
             This runs on the main Tkinter thread.
             """
-            # Ensure QR and Proof displays are updated
+            # Ensure QR and LKey displays are updated
             self.update_qr_display(self.qr_image_pil)
-            final_proof_image = Image.open(self.prepared_upload_path)
-            proof_with_overlay = self.image_processor.overlay_checkmark(final_proof_image)
-            self.update_proof_display(proof_with_overlay)
+            final_lkey_image = Image.open(self.prepared_upload_path)
+            lkey_with_overlay = self.image_processor.overlay_checkmark(final_lkey_image)
+            self.update_lkey_display(lkey_with_overlay)
 
             # Show all action buttons (folder buttons are always useful)
             self._show_qr_action_buttons()
-            self.proof_folder_button.config(state=NORMAL)
+            self.lkey_folder_button.config(state=NORMAL)
             self.qr_folder_button.config(state=NORMAL)
 
             # Determine state of main upload button and Print/Email buttons
@@ -1535,8 +1597,8 @@ class IssuerApp:
         self.qr_print_button.config(state=DISABLED)
         self.qr_email_button.config(state=DISABLED)
         # Folder buttons should remain enabled if they were already
-        if hasattr(self, "proof_folder_button"):
-            self.proof_folder_button.config(state=NORMAL)
+        if hasattr(self, "lkey_folder_button"):
+            self.lkey_folder_button.config(state=NORMAL)
         if hasattr(self, "qr_folder_button"):
             self.qr_folder_button.config(state=NORMAL)
         logging.warning("UI updated for auto-upload failure.")
@@ -1625,38 +1687,34 @@ class IssuerApp:
         self.status_logo_label.config(image=img_tk)
         self.status_logo_label.image = img_tk
 
-    def _open_proof_save_location(self):
-        """Opens the folder where the signed proof image was saved."""
-        if self.config.make_local_copy:
-            proof_path = Path(self.config.proof_save_path)
-            if proof_path.exists():
-                webbrowser.open(f"file:///{proof_path.resolve()}")
-            else:
-                show_error("Path Not Found", f"The directory '{proof_path}' does not exist.")
+    def _open_lkey_save_location(self):
+        """Opens the folder where the signed LKey was saved."""
+        lkey_path = Path(self.config.legato_files_save_path)
+        if lkey_path.exists():
+            webbrowser.open(f"file:///{lkey_path.resolve()}")
         else:
-            show_info("No Local Copy",
-                      "You did not choose to save a local copy of this file.\n\n"
-                      "A copy has been uploaded to your server.")
+            show_error("Path Not Found", f"The directory '{lkey_path}' does not exist.")
 
     def _open_qr_save_location(self):
         """Opens the folder where the QR code image was saved."""
-        qr_path = Path(self.config.qr_save_path)
+        # QR path is now the same as the LKey path
+        qr_path = Path(self.config.legato_files_save_path)
         if qr_path.exists():
             webbrowser.open(f"file:///{qr_path.resolve()}")
         else:
             show_error("Path Not Found", f"The directory '{qr_path}' does not exist.")
 
     def _show_qr_action_buttons(self):
-        """Places all overlay buttons on the proof and QR frames."""
+        """Places all overlay buttons on the LKey and QR frames."""
         # QR Frame Buttons (bottom-left and bottom-right)
         if hasattr(self, "qr_folder_button"):
             self.qr_folder_button.place(relx=0.0, rely=1.0, x=5, y=-5, anchor=SW)
             self.qr_email_button.place(relx=1.0, rely=1.0, x=-5, y=-5, anchor=SE)
             self.qr_print_button.place(relx=1.0, rely=1.0, x=-45, y=-5, anchor=SE)
         
-        # Proof Frame Button (bottom-right)
-        if hasattr(self, "proof_folder_button"):
-            self.proof_folder_button.place(relx=1.0, rely=1.0, x=-5, y=-5, anchor=SE)
+        # LKey Frame Button (bottom-right)
+        if hasattr(self, "lkey_folder_button"):
+            self.lkey_folder_button.place(relx=1.0, rely=1.0, x=-5, y=-5, anchor=SE)
 
     def _hide_qr_action_buttons(self):
         """Removes all overlay action buttons."""
@@ -1665,8 +1723,8 @@ class IssuerApp:
             self.qr_email_button.place_forget()
         if hasattr(self, "qr_folder_button"):
             self.qr_folder_button.place_forget()
-        if hasattr(self, "proof_folder_button"):
-            self.proof_folder_button.place_forget()
+        if hasattr(self, "lkey_folder_button"):
+            self.lkey_folder_button.place_forget()
 
     def print_document_qr(self):
         """Handles printing the generated document QR code."""
@@ -1866,15 +1924,13 @@ class IssuerApp:
         is_watermark_licensed = self.license_manager.is_feature_enabled("watermark")
         is_audit_licensed = self.license_manager.is_feature_enabled("audit")
         widget_states = {
-            self.pro_security_checkbox: has_identity, self.randomize_proof_name_checkbox: has_identity,
-            self.make_local_copy_checkbox: has_identity,
+            self.pro_security_checkbox: has_identity, self.randomize_lkey_name_checkbox: has_identity,
             self.apply_watermark_checkbox: has_identity and is_watermark_licensed,
             self.apply_logo_watermark_checkbox: has_identity and is_watermark_licensed,
             self.enable_audit_trail_checkbox: has_identity and is_audit_licensed,
         }
         for widget, enabled in widget_states.items():
             widget.config(state=NORMAL if enabled else DISABLED)
-        self.toggle_proof_path_state()
         self.toggle_watermark_state()
         if has_identity:
             self.setup_frame.pack_forget()
@@ -2011,7 +2067,7 @@ class IssuerApp:
         ttk.Label(summary_frame, text="Certificate Summary:").grid(row=0, column=0, sticky="w")
         self.message_text = ttk.Text(summary_frame, height=3, wrap="word")
         self.message_text.grid(row=1, column=0, sticky="nsew")
-        self.browse_button = ttk.Button(input_area_frame, text="📄 Select Image...", command=self.browse_and_set_proof_file, bootstyle="primary-outline")
+        self.browse_button = ttk.Button(input_area_frame, text="📄 Select Image...", command=self.browse_and_set_image_file, bootstyle="primary-outline")
         self.browse_button.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         status_line_frame = ttk.Frame(input_area_frame)
         status_line_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
@@ -2023,31 +2079,31 @@ class IssuerApp:
         self._validate_summary_length()
         self.generate_qr_button = ttk.Button(self.encoder_frame, text="✨ Fingerprint, Sign & Save", command=self.generate_document_qr, bootstyle=PRIMARY, state="disabled")
         self.generate_qr_button.grid(row=1, column=0, sticky="ew", ipady=5, padx=(0, 5), pady=10)
-        self.upload_button = ttk.Button(self.encoder_frame, text="🚀 Upload Fingerprinted Image", command=self.upload_proof_file_threaded, state="disabled")
+        self.upload_button = ttk.Button(self.encoder_frame, text="🚀 Upload LKey", command=self.upload_lkey_file_threaded, state="disabled")
         self.upload_button.grid(row=1, column=1, sticky="ew", ipady=5, padx=(5, 0), pady=10)
-        proof_lf = ttk.LabelFrame(self.encoder_frame, text="Fingerprinted Image Proof")
-        proof_lf.grid(row=2, column=0, sticky="nsew", padx=(0, 5))
-        proof_lf.grid_columnconfigure(0, weight=1)
-        proof_lf.grid_rowconfigure(1, weight=1)
-        top_status_bar_frame = ttk.Frame(proof_lf)
+        lkey_lf = ttk.LabelFrame(self.encoder_frame, text="Generated LKey Image")
+        lkey_lf.grid(row=2, column=0, sticky="nsew", padx=(0, 5))
+        lkey_lf.grid_columnconfigure(0, weight=1)
+        lkey_lf.grid_rowconfigure(1, weight=1)
+        top_status_bar_frame = ttk.Frame(lkey_lf)
         top_status_bar_frame.grid(row=0, column=0, sticky="ew", padx=5)
-        top_status_bar_frame.grid_columnconfigure(0, weight=1) # Allow indicator to take space
-        top_status_bar_frame.grid_columnconfigure(1, weight=1) # Allow progress bar to take space
+        top_status_bar_frame.grid_columnconfigure(0, weight=1) 
+        top_status_bar_frame.grid_columnconfigure(1, weight=1) 
 
         self.auto_upload_indicator_label = ttk.Label(top_status_bar_frame, text="", bootstyle="success")
-        self.auto_upload_indicator_label.grid(row=0, column=0, sticky="w", padx=(0, 5)) # Anchor left
+        self.auto_upload_indicator_label.grid(row=0, column=0, sticky="w", padx=(0, 5)) 
 
         self.upload_progress_bar = ttk.Progressbar(top_status_bar_frame, mode="indeterminate", length=150)
         self.upload_progress_bar.grid(row=0, column=1, sticky="ew")
 
         self.upload_progress_bar.grid_remove() 
-        self.proof_image_display_label = ttk.Label(proof_lf, relief="flat", anchor="center")
-        self.proof_image_display_label.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.lkey_image_display_label = ttk.Label(lkey_lf, relief="flat", anchor="center")
+        self.lkey_image_display_label.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
 
-        self.proof_folder_button = ttk.Button(
-            proof_lf,
+        self.lkey_folder_button = ttk.Button(
+            lkey_lf,
             text="📁",
-            command=self._open_proof_save_location,
+            command=self._open_lkey_save_location,
             bootstyle="secondary-outline",
             width=3
         )
@@ -2088,7 +2144,7 @@ class IssuerApp:
         self.batch_file_label.pack(side="left", anchor="w")
         coldata = [
             {"text": "Status", "stretch": False, "width": 150},
-            {"text": "Proof File Path", "stretch": True},
+            {"text": "Image File Path", "stretch": True},
             {"text": "Certificate Summary", "stretch": True},
         ]
         self.batch_tree = Tableview(parent_frame, coldata=coldata, paginated=False, searchable=False, bootstyle=PRIMARY)
@@ -2162,26 +2218,19 @@ class IssuerApp:
         self.save_and_upload_button.grid(row=11, column=0, columnspan=3, sticky="ew", ipady=5)
         right_container = ttk.Frame(top_columns_container)
         right_container.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        proof_qr_frame = ttk.LabelFrame(right_container, text="⚙️ Signing & Saving Options", padding=15)
-        proof_qr_frame.pack(fill="x", expand=False, pady=(0, 10))
-        self.auto_upload_check = ttk.Checkbutton(proof_qr_frame, text="Automatically Upload Fingerprinted Images After Signing", variable=self.ftp_auto_upload_var, bootstyle="success-round-toggle", command=self.on_auto_upload_toggle, state="disabled")
+        lkey_qr_frame = ttk.LabelFrame(right_container, text="⚙️ Signing & Saving Options", padding=15)
+        lkey_qr_frame.pack(fill="x", expand=False, pady=(0, 10))
+        self.auto_upload_check = ttk.Checkbutton(lkey_qr_frame, text="Automatically Upload LKeys After Signing", variable=self.ftp_auto_upload_var, bootstyle="success-round-toggle", command=self.on_auto_upload_toggle, state="disabled")
         self.auto_upload_check.pack(anchor="w", pady=(5, 10))
-        self.randomize_proof_name_checkbox = ttk.Checkbutton(proof_qr_frame, text="Salt Proof File Name", variable=self.randomize_proof_name_var, bootstyle="round-toggle", command=self.save_settings)
-        self.randomize_proof_name_checkbox.pack(anchor="w", pady=(5, 10))
-        self.make_local_copy_checkbox = ttk.Checkbutton(proof_qr_frame, text="Save a Local Copy of Signed Proofs", variable=self.make_local_copy_var, bootstyle="round-toggle", command=lambda: (self.toggle_proof_path_state(), self.save_settings()))
-        self.make_local_copy_checkbox.pack(anchor="w", pady=(5, 2))
-        self.proof_path_frame = ttk.Frame(proof_qr_frame)
-        self.proof_path_frame.pack(fill="x", expand=True, padx=20, pady=(0, 15))
-        ttk.Label(self.proof_path_frame, text="Proof Save Location:").pack(anchor="w")
-        self.proof_path_entry = ttk.Entry(self.proof_path_frame, textvariable=self.proof_save_path_var, state="disabled")
-        self.proof_path_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        self.proof_path_browse_btn = ttk.Button(self.proof_path_frame, text="...", state="disabled", width=3, command=self.browse_for_proof_save_path)
-        self.proof_path_browse_btn.pack(side="left")
-        ttk.Label(proof_qr_frame, text="Automatic QR Code Save Location:").pack(anchor="w", pady=(10, 2))
-        qr_path_frame = ttk.Frame(proof_qr_frame)
-        qr_path_frame.pack(fill="x", expand=True)
-        ttk.Entry(qr_path_frame, textvariable=self.qr_save_path_var, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(qr_path_frame, text="...", width=3, command=self.browse_for_qr_save_path).pack(side="left")
+        self.randomize_lkey_name_checkbox = ttk.Checkbutton(lkey_qr_frame, text="Salt LKey File Name", variable=self.randomize_lkey_name_var, bootstyle="round-toggle", command=self.save_settings)
+        self.randomize_lkey_name_checkbox.pack(anchor="w", pady=(5, 10))
+        
+        ttk.Label(lkey_qr_frame, text="Local Save Location for Signed Files (auto-organized by date):").pack(anchor="w", pady=(10, 2))
+        lkey_path_frame = ttk.Frame(lkey_qr_frame)
+        lkey_path_frame.pack(fill="x", expand=True)
+        ttk.Entry(lkey_path_frame, textvariable=self.legato_files_save_path_var, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(lkey_path_frame, text="...", width=3, command=self.browse_for_legato_files_save_path).pack(side="left")
+
         watermark_frame = ttk.LabelFrame(right_container, text="🖼️ Watermark Options (Pro Feature)", padding=15)
         watermark_frame.pack(fill="x", expand=False, pady=(10, 0))
         is_watermark_licensed = self.license_manager.is_feature_enabled("watermark")
@@ -2220,16 +2269,16 @@ class IssuerApp:
         inner_text_widget.tag_configure("h2", font="-size 11 -weight bold", spacing1=20, spacing3=5)
         inner_text_widget.tag_configure("p", font="-size 10", lmargin1=10, lmargin2=10, spacing3=10)
         guide_content = [
-            ("Day-to-Day Legato Key Workflow\n", "h1"), 
-            ("Once you've created your legacy document (certificate, valuation letter, photos, etc.), follow these steps:", "p"), 
-            ("Step 1: Select your image 'proof'\n", "h2"), 
-            ("Choose your supporting image (photo of the instrument, a scan of the certificate letter), it's fingerprinted will be linked to the LegatoKey.", "p"), 
-            ("Step 2: Write a short summary of your document\n", "h2"), 
-            ("""For example:\n-"We [Your Name] certify that the violin examined and reproduced on our certificate and its digital counterpart is, in our opinion, an instrument by [Name of the Maker], authentic in all its major parts and  measuring 35.5 cm."\n-"Valuation issued to Count Ignazio Alessandro Cozio di Salabue etc..."\nThis summary will be securely encrypted and embedded in the LegatoKey and cannot be changed.""", "p"), 
-            ("Step 3: Click 'Fingerprint, Sign & Save'\n", "h2"), 
-            ("This creates your secure LegatoKey. If 'Automatic Upload' is enabled in Settings, the file will upload to your web server automatically. If not, click the Upload button to send it manually.", "p"), 
-            ("Step 4: Print the LegatoKey\n", "h2"), 
-            ("You can now print the generated LegatoKey (QR code) onto a label envelope or directly onto the document.", "p"),
+            ("Day-to-Day LegatoKey Workflow\n", "h1"),
+            ("Once you've created your legacy document (certificate, valuation letter, photos, etc.), follow these steps:", "p"),
+            ("Step 1: Select your source image\n", "h2"),
+            ("Choose your supporting image (photo of the instrument, a scan of the certificate letter). Its fingerprint will be linked to the LegatoKey.", "p"),
+            ("Step 2: Write a short summary of your document\n", "h2"),
+            ("""For example:\n-"We [Your Name] certify that the violin examined and reproduced on our certificate and its digital counterpart is, in our opinion, an instrument by [Name of the Maker], authentic in all its major parts and  measuring 35.5 cm."\n-"Valuation issued to Count Ignazio Alessandro Cozio di Salabue etc..."\nThis summary will be securely encrypted and embedded in the LegatoKey and cannot be changed.""", "p"),
+            ("Step 3: Click 'Fingerprint, Sign & Save'\n", "h2"),
+            ("This creates your secure LegatoKey (.lky) file and its corresponding QR code. If 'Automatic Upload' is enabled in Settings, the .lky file will upload to your web server automatically. If not, click the 'Upload LKey' button to send it manually.", "p"),
+            ("Step 4: Print the LegatoKey\n", "h2"),
+            ("You can now print the generated LegatoKey (QR code) onto a label, an envelope, or directly onto the physical document.", "p"),
         ]
         for text, tag in guide_content:
             for i, line in enumerate(textwrap.dedent(text).strip().splitlines()):
@@ -2282,9 +2331,9 @@ class IssuerApp:
         security_features = [
             ("Industry-Standard Encryption", "All server communications use robust Transport Layer Security (TLS 1.2+) to protect data in transit."),
             ("Secure Credential Storage", "Your private key and passwords can be stored in the OS Keychain, never in plain text files, when Hardened Security is enabled."),
-            ("Modern Cryptography", "Utilizes NIST-approved algorithms, including RSA-2048 for digital signatures and SHA-256 for data integrity."),
+            ("Modern Cryptography", "Utilizes NIST-approved algorithms, including Ed25519 for digital signatures and SHA-256 for data integrity."),
             ("Local Key Processing", "Your private key never leaves your computer. All signing operations happen locally."),
-            ("Tamper Detection", "Each LegatoKey includes a cryptographic signature that detects any unauthorized changes to its content and proof."),
+            ("Tamper Detection", "Each LegatoKey includes a cryptographic signature that detects any unauthorized changes to its content and source image."),
             ("Audit Trail (Pro)", "When enabled, a blockchain-like audit file is created, logging each key creation. Any attempt to tamper with this evidence is detected and reported."),
         ]
         for i, (title, description) in enumerate(security_features):
