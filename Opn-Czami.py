@@ -16,21 +16,17 @@
 # <https://www.gnu.org/licenses/>.
 # 
 
-
 # --- Standard Library Imports ---
 import base64
 import base45
 import cbor2
-import keyring
-import base58
 import datetime
-import ftplib
-import hashlib
 import io
 import json
 import logging
-import struct
+import math
 import os
+import posixpath
 import random
 import shutil
 import string
@@ -39,27 +35,22 @@ import sys
 import tempfile
 import threading
 import webbrowser
+import zlib
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Union
-import zlib
-import posixpath 
 from urllib.parse import urlparse
 
-#import extern
-import math
-
 # --- Third-Party Imports ---
-import keyring
 import qrcode
 import requests
 import ttkbootstrap as ttk
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils, ed25519 # For Ed25519 support
+from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils, ed25519
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 from ttkbootstrap.constants import *
 from ttkbootstrap.scrolled import ScrolledText
@@ -72,49 +63,19 @@ try:
 except ImportError:
     PYZIPPER_AVAILABLE = False
 
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
 # --- Local Application Imports ---
-from license_manager import LicenseManager, get_app_data_path
-
-# --- Application Constants ---
-APP_VERSION = "2.0.0"
-APP_NAME = "OpnCzami"
-KEYRING_SERVICE_NAME = "OperatorIssuerApp"
-KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
-MAX_SUMMARY_CHARS = 400
-MAX_LOGO_SIZE_BYTES = 256 * 1024  # 256 KB
-MAX_LOGO_PIXELS = 74000  # Approx. 400x185
-STANDARDIZED_LOGO_BASENAME = "my-legato-link-logo"
-
-# --- Path Definitions ---
-APP_DATA_DIR = get_app_data_path(APP_NAME)
-USER_DOCS_DIR = Path.home() / "Documents"
-APP_DOCS_DIR = USER_DOCS_DIR / APP_NAME
-SCRIPT_DIR = Path(sys.argv[0] if getattr(sys, "frozen", False) else __file__).parent
-ISSUER_DB_FILE = APP_DATA_DIR / "opn_czami_settings.json"
-KEY_FILENAME_TEMPLATE = "abracadabra-{issuer_id}.key"
-INFO_FILENAME = "my-legato-link.json"
-AUDIT_LOG_FILENAME_TEMPLATE = "Audit-Trail-{issuer_id}.log"
-LOG_DIR = APP_DATA_DIR / "logs"
-APP_LOG_FILE = LOG_DIR / "opn-czami-app.log"
-
-# --- Directory Creation ---
-(APP_DOCS_DIR / "Legato_Keys").mkdir(parents=True, exist_ok=True)
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-# --- Application-Specific Enums & Data Structures ---
-
-# Document and Item type definitions
-DOC_TYPES = {
-"2": "Valuation Letter", "3": "Report", "4": "Other"
-}
-ITEM_TYPES = {
-    "1": "Violin", "2": "Viola", "3": "Cello", "4": "Double Bass",
-    "5": "Violin bow", "6": "Viola bow", "7": "Cello bow", "8": "Double Bass bow",
-    "9": "Custom", "10": "Custom bow"
-}
-DOC_TYPES_REVERSE = {v: k for k, v in DOC_TYPES.items()}
-ITEM_TYPES_REVERSE = {v: k for k, v in ITEM_TYPES.items()}
-
+from config import *
+from utils import resource_path, show_error, show_info
+from settings_manager import SettingsManager
+from ftp_manager import FTPManager
+from crypto_manager import CryptoManager, KeyStorage
+from license_manager import LicenseManager
 
 # --- Pro Features Handling ---
 try:
@@ -131,19 +92,7 @@ except ImportError:
         def load_and_verify_audit_log(self, *args):
             return [], False, "Pro features are not available.", DANGER
 
-try:
-    import pandas as pd
-    PANDAS_AVAILABLE = True
-except ImportError:
-    PANDAS_AVAILABLE = False
-
-
 # --- Application-Specific Enums & Data Structures ---
-class KeyStorage(Enum):
-    """Enumeration for where a private key is stored."""
-    KEYSTORE = "STORED_IN_KEYSTORE"
-    FILE = "STORED_IN_FILE"
-
 class FTPMode(Enum):
     """Enumeration for FTP upload mode."""
     MANUAL = "Manual"
@@ -185,375 +134,7 @@ class AppConfig:
             self.legato_files_save_path = str(APP_DOCS_DIR / "Legato_Keys")
 
 
-# --- Helper Functions ---
-def resource_path(relative_path: str) -> Path:
-    """ Get absolute path to resource, works for dev and for PyInstaller. """
-    try:
-        base_path = Path(sys._MEIPASS)
-    except AttributeError:
-        base_path = Path(__file__).parent.resolve()
-    return base_path / "assets" / relative_path
-
-def show_error(title: str, message: str, log_error: bool = True):
-    """Convenience function for showing a messagebox error and logging it."""
-    if log_error:
-        logging.error(f"{title}: {message}")
-    messagebox.showerror(title, message)
-
-def show_info(title: str, message: str):
-    """Convenience function for showing a messagebox info dialog."""
-    logging.info(f"{title}: {message}")
-    messagebox.showinfo(title, message)
-
-
 # --- Core Application Logic Classes ---
-class SettingsManager:
-    """Handles loading and saving of the main application settings file."""
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-
-    def load_app_data(self) -> tuple[Union[str, None], Union[dict, None]]:
-        """
-        Loads the issuer data from the JSON file.
-        Returns the first issuer ID found and their data dictionary.
-        """
-        if not self.db_path.exists():
-            return None, None
-        try:
-            issuers = json.loads(self.db_path.read_text(encoding="utf-8"))
-            if not issuers:
-                return None, None
-            # The app is designed to handle only one identity at a time.
-            issuer_id, issuer_data = list(issuers.items())[0]
-            return issuer_id, issuer_data
-        except (json.JSONDecodeError, IndexError, Exception) as e:
-            show_error("DB Load Error", f"Could not load or parse issuer database: {e}")
-            return None, None
-
-    def save_app_data(self, all_data: dict):
-        """Saves the provided data dictionary to the JSON settings file."""
-        try:
-            with self.db_path.open("w", encoding="utf-8") as f:
-                json.dump(all_data, f, indent=4)
-            logging.info("Application data saved successfully.")
-        except Exception as e:
-            show_error("DB Save Error", f"Could not save issuer database: {e}")
-
-    def clear_identity_file(self):
-        """Wipes the issuer database file, effectively deleting the identity."""
-        self.save_app_data({})
-
-class CryptoManager:
-    """Manages all cryptographic operations and secure storage."""
-    def __init__(self, service_name: str, app_data_dir: Path):
-        self.service_name = service_name
-        self.app_data_dir = app_data_dir
-        self.log_dir = self.app_data_dir / "logs"
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-
-    def _save_to_keystore(self, key_name: str, secret_value: str) -> bool:
-        """Saves a secret to the OS keystore, chunking if necessary."""
-        try:
-            b64_secret = base64.b64encode(secret_value.encode("utf-8")).decode("utf-8")
-            chunks = [b64_secret[i: i + KEY_CHUNK_SIZE] for i in range(0, len(b64_secret), KEY_CHUNK_SIZE)]
-            metadata = {"chunks": len(chunks)}
-            keyring.set_password(self.service_name, f"{key_name}_meta", json.dumps(metadata))
-            for i, chunk in enumerate(chunks):
-                keyring.set_password(self.service_name, f"{key_name}_chunk_{i}", chunk)
-            return True
-        except Exception as e:
-            show_error("Keystore Error", f"Could not save secret to OS keystore: {e}")
-            return False
-
-    def _load_from_keystore(self, key_name: str) -> Union[str, None]:
-        """Loads a secret from the OS keystore, reassembling chunks."""
-        try:
-            metadata_str = keyring.get_password(self.service_name, f"{key_name}_meta")
-            if not metadata_str:
-                return None
-            num_chunks = json.loads(metadata_str).get("chunks", 0)
-            chunks = [keyring.get_password(self.service_name, f"{key_name}_chunk_{i}") for i in range(num_chunks)]
-            if any(c is None for c in chunks):
-                raise ValueError(f"Missing chunks for '{key_name}' in keystore.")
-            return base64.b64decode("".join(chunks)).decode("utf-8")
-        except Exception as e:
-            show_error("Keystore Error", f"Could not load secret from OS keystore: {e}")
-            return None
-
-    def _delete_from_keystore(self, key_name: str):
-        """Deletes a secret and its metadata from the OS keystore."""
-        try:
-            metadata_str = keyring.get_password(self.service_name, f"{key_name}_meta")
-            if metadata_str:
-                num_chunks = json.loads(metadata_str).get("chunks", 0)
-                for i in range(num_chunks):
-                    try:
-                        keyring.delete_password(self.service_name, f"{key_name}_chunk_{i}")
-                    except Exception:
-                        pass # Ignore if a chunk is already gone
-                keyring.delete_password(self.service_name, f"{key_name}_meta")
-        except Exception as e:
-            logging.warning(f"Could not fully delete '{key_name}' from keystore: {e}", exc_info=True)
-
-    def save_private_key_to_keystore(self, issuer_id: str, private_key_pem: str) -> bool:
-        return self._save_to_keystore(issuer_id, private_key_pem)
-
-    def load_private_key_from_keystore(self, issuer_id: str) -> Union[str, None]:
-        return self._load_from_keystore(issuer_id)
-
-    def delete_private_key_from_keystore(self, issuer_id: str):
-        self._delete_from_keystore(issuer_id)
-
-    def save_ftp_password(self, issuer_id: str, password: str) -> bool:
-        return self._save_to_keystore(f"{issuer_id}_ftp", password)
-
-    def load_ftp_password(self, issuer_id: str) -> Union[str, None]:
-        return self._load_from_keystore(f"{issuer_id}_ftp")
-
-    def delete_ftp_password(self, issuer_id: str):
-        self._delete_from_keystore(f"{issuer_id}_ftp")
-        
-    @lru_cache(maxsize=2) # Cache the last 2 keys, just in case
-    def get_private_key(self, key_location: str, issuer_id: str, key_path: Path = None) -> Union[str, None]:
-        """
-        Loads the private key from its source (keystore or file) and caches the result.
-        This method is the single point of entry for retrieving a private key.
-        """
-        logging.info(f"Loading private key for {issuer_id} from {key_location}...")
-        if key_location == KeyStorage.KEYSTORE.value:
-            return self.load_private_key_from_keystore(issuer_id)
-        elif key_location == KeyStorage.FILE.value and key_path:
-            try:
-                return key_path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                show_error("Fatal Error", f"Private key file missing: {key_path}. The identity is unusable.")
-                return None
-        return None
-    
-    @staticmethod
-    def sign_raw_bytes(private_key_pem: str, data_bytes: bytes) -> str:
-        """Signs a raw byte payload with an Ed25519 private key and returns Base58."""
-        priv_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
-        signature = priv_key.sign(data_bytes)
-        return base58.b58encode(signature).decode("utf-8")    
-    
-    @staticmethod
-    def assemble_lky_file(image_bytes: bytes, payload_dict: dict, manifest_dict: dict) -> bytes:
-        """Assembles the final .lky file from its constituent parts."""
-        is_jpeg = image_bytes.startswith(b'\xff\xd8')
-        if not is_jpeg:
-            logging.warning("POLYGLOT WARNING: Image data does not start with JPEG magic bytes.")
-        try:
-            payload_json_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-            manifest_json_bytes = json.dumps(manifest_dict, separators=(",", ":")).encode("utf-8")
-            manifest_length = len(manifest_json_bytes)
-            manifest_length_bytes = struct.pack('>I', manifest_length)
-            return image_bytes + payload_json_bytes + manifest_json_bytes + manifest_length_bytes
-        except Exception as e:
-            logging.error(f"Failed during LKY file assembly: {e}", exc_info=True)
-            return None
-
-    @staticmethod
-    def generate_id_from_name(name: str) -> str:
-        """Generates a deterministic 12-char ID from a name string."""
-        return hashlib.sha256(name.lower().strip().encode("utf-8")).hexdigest()[:12]
-
-    @staticmethod
-    def calculate_file_hash(filepath_or_buffer) -> Union[str, None]:
-        """
-        Calculates the SHA-256 hash of a file path OR an in-memory buffer.
-        Returns the first 32 chars of the hex digest.
-        """
-        hasher = hashlib.sha256()
-        try:
-            # Check if the input is a file path object from the 'pathlib' library
-            if isinstance(filepath_or_buffer, Path):
-                if not filepath_or_buffer.exists(): 
-                    logging.error(f"Hash calculation failed: Path does not exist at '{filepath_or_buffer}'")
-                    return None
-                with filepath_or_buffer.open("rb") as f:
-                    while chunk := f.read(4096):
-                        hasher.update(chunk)
-            
-            # Check if the input is an in-memory, file-like object (like io.BytesIO)
-            elif hasattr(filepath_or_buffer, 'read'):
-                filepath_or_buffer.seek(0) # IMPORTANT: Rewind the buffer to the beginning
-                while chunk := filepath_or_buffer.read(4096):
-                    hasher.update(chunk)
-                filepath_or_buffer.seek(0) # Rewind again for good measure in case it's reused
-            
-            # If it's neither, we can't process it
-            else:
-                show_error("Hash Error", f"Invalid input type for hash calculation: {type(filepath_or_buffer)}")
-                return None
-                
-            return hasher.hexdigest()[:32]
-            
-        except Exception as e:
-            show_error("File Hash Error", f"An error occurred during hash calculation: {e}")
-            logging.error(f"Error in calculate_file_hash: {e}", exc_info=True)
-            return None
-
-    @staticmethod
-    def sign_payload(private_key_pem: str, payload_dict: dict) -> str:
-        """Signs a dictionary payload with a private key and returns a urlsafe base64 signature."""
-        priv_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
-        payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-        signature = priv_key.sign(payload_json)
-        return base58.b58encode(signature).decode("utf-8") 
-
-      
-
-    @staticmethod
-    def verify_signature(public_key_pem: str, signature_b64: str, payload_dict: dict) -> bool:
-        """Verifies a signature against a public key and payload using Ed25519 and Base64URL."""
-        try:
-            pub_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
-            payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-            signature = base64.urlsafe_b64decode(signature_b64)
-            pub_key.verify(signature, payload_json)
-            return True
-        
-        except (InvalidSignature, ValueError, Exception):
-
-            return False
-
-    def get_audit_log_path(self, issuer_id: str) -> Path:
-        """Returns the path to the audit log for a given issuer."""
-        return self.log_dir / AUDIT_LOG_FILENAME_TEMPLATE.format(issuer_id=issuer_id)
-
-    def get_last_log_hash(self, log_path: Path) -> Union[str, None]:
-        """
-        Retrieves the hash of the last valid entry in the audit log for chaining.
-        """
-        if not log_path.exists() or log_path.stat().st_size == 0:
-            return None
-        try:
-            with log_path.open("rb") as f:
-
-                try:
-                    f.seek(-2, os.SEEK_END)
-                    while f.read(1) != b"\n":
-                        f.seek(-2, os.SEEK_CUR)
-                except OSError: 
-                    f.seek(0)
-                last_line = f.readline().decode("utf-8").strip()
-
-            if "::" not in last_line:
-                logging.warning(f"Audit log '{log_path.name}' malformed. Last line invalid.")
-                return None
-            
-            json_part, _ = last_line.split("::", 1)
-            return hashlib.sha256(json_part.encode("utf-8")).hexdigest()
-        except Exception as e:
-            show_error(
-                "Audit Log Warning",
-                f"Could not read last audit trail entry. A new chain may start. Error: {e}",
-            )
-            return None
-
-    def log_event(self, issuer_id: str, private_key_pem: str, event_type: str, details: dict):
-        """Creates and appends a cryptographically signed entry to the audit log."""
-        try:
-            log_path = self.get_audit_log_path(issuer_id)
-            previous_hash = self.get_last_log_hash(log_path)
-
-            log_entry = {
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "issuer_id": issuer_id,
-                "event_type": event_type,
-                "details": details,
-                "previous_hash": previous_hash,
-            }
-
-            signature_b64 = self.sign_payload(private_key_pem, log_entry)
-            log_line = f"{json.dumps(log_entry, separators=(',', ':'))}::{signature_b64}\n"
-
-            with log_path.open("a", encoding="utf-8") as f:
-                f.write(log_line)
-            
-            logging.info(f"Logged event '{event_type}' to audit trail.")
-
-            
-            try:
-                head_hash_path = log_path.with_suffix(".head")
-                entry_json = json.dumps(log_entry, separators=(",", ":")).encode("utf-8")
-                current_entry_hash = hashlib.sha256(entry_json).hexdigest()
-                head_hash_path.write_text(current_entry_hash, encoding="utf-8")
-            except Exception as e:
-                show_error(
-                    "Audit Log Critical Failure",
-                    f"Could not update audit trail's head file. Log may be inconsistent. Error: {e}",
-                )
-
-        except Exception as e:
-            show_error(
-                "Audit Log Failure",
-                f"Could not write log entry. Check permissions for '{log_path.name}'. Error: {e}",
-            )
-        
-
-class FTPManager:
-    """Handles all FTP/FTPS communications for the application."""
-    def test_connection(self, host: str, user: str, password: str) -> str:
-        """Tests the FTP connection with the given credentials."""
-        if not all([host, user, password]):
-            return "Host, User, and Password cannot be empty."
-        try:
-            with ftplib.FTP_TLS(timeout=10) as ftp:
-                ftp.connect(host)
-                ftp.login(user, password)
-                ftp.prot_p()
-                ftp.voidcmd("NOOP")
-            return "Success"
-        except ftplib.all_errors as e:
-            return f"FTP Test Failed: {e}"
-        except Exception as e:
-            return f"An unexpected error occurred: {e}"
-
-    def upload_file(self, local_path: Path, remote_dir: str, remote_filename: str, ftp_settings: dict) -> str:
-        """Uploads a single file, creating the remote directory structure if it doesn't exist."""
-        host, user, password = ftp_settings.get("host"), ftp_settings.get("user"), ftp_settings.get("password")
-        if not all([host, user, password, remote_dir]):
-            return "FTP settings are incomplete."
-        
-        logging.info(f"FTP: Attempting to upload '{local_path.name}' to remote dir '{remote_dir}'")
-        try:
-            with ftplib.FTP_TLS(timeout=15) as ftp:
-                ftp.connect(host)
-                ftp.login(user, password)
-                ftp.prot_p()
-                path_parts = Path(remote_dir.strip("/\\")).parts
-                for part in path_parts:
-                    if not part or part in ('/', '\\'): continue
-                    try:
-                        ftp.cwd(part)
-                    except ftplib.error_perm:
-                        logging.info(f"FTP: Directory '{part}' not found, attempting to create.")
-                        try:
-                            ftp.mkd(part)
-                            ftp.cwd(part)
-                        except ftplib.error_perm as mkd_e:
-                            err_msg = f"FTP Error: Failed to create or access directory '{part}'. Check permissions. Error: {mkd_e}"
-                            logging.error(err_msg)
-                            return err_msg
-                
-                logging.info(f"FTP: Now in target directory. Uploading '{remote_filename}'...")
-                with local_path.open("rb") as f:
-                    ftp.storbinary(f"STOR {remote_filename}", f)
-
-            success_msg = f"Successfully uploaded {remote_filename} to {remote_dir}."
-            logging.info(success_msg)
-            return success_msg
-        except ftplib.all_errors as e:
-            err_msg = f"FTP Upload Error: {e}"
-            logging.error(err_msg, exc_info=True)
-            return err_msg
-        except Exception as e:
-            err_msg = f"An unexpected error occurred during upload: {e}"
-            logging.error(err_msg, exc_info=True)
-            return err_msg
-      
 class ImageProcessor:
     """Handles all image manipulation tasks like watermarking and QR code generation."""
     def __init__(self, checkmark_icon_path: Union[Path, None]):
@@ -662,6 +243,7 @@ class ImageProcessor:
             qr_img.paste(logo_resized, pos, mask=logo_resized)
         
         return qr_img.convert("RGB")
+
 
 class IssuerApp:
    
@@ -844,8 +426,6 @@ class IssuerApp:
         except Exception as e:
             logging.error(f"Could not set window icon: {e}", exc_info=True)
 
-
-
     def _on_custom_item_focus(self, *args):
         """When the user clicks into the custom item box, deselect radio buttons."""
         self.primary_item_type_var.set("") # Deselects all radio buttons
@@ -915,6 +495,7 @@ class IssuerApp:
         else:
             self.audit_status_label.config(text="Audit Trail is a Professional Feature.", bootstyle=INFO)
             self._show_upgrade_prompt("Audit Trail")
+
     def _apply_number_mask(self) -> str:
         """Applies the user-defined mask to the next auto-increment number."""
         mask = self.mask_string_var.get()
@@ -1113,8 +694,6 @@ class IssuerApp:
         """Single handler for the 'Auto' checkbox which is now mask-aware."""
         self._update_doc_num_entry_state()
 
-  
-
     def create_and_save_identity(self):
         name = self.name_entry.get().strip()
         url_path = self.url_path_var.get().strip()
@@ -1218,8 +797,6 @@ class IssuerApp:
             self.root.after(0, lambda: self.generate_qr_button.config(state=NORMAL))
             self.is_generating = False
         
-
-        
     def _sign_single_document(self, image_path: Path, details: dict) -> tuple[bool, bool, str]:
         try:
             # --- (All the data prep and LKY file creation logic remains the same) ---
@@ -1296,7 +873,6 @@ class IssuerApp:
             logging.error(f"Error during document signing: {e}", exc_info=True)
             return False, False, f"Signing failed due to an unexpected error: {e}"
 
-        
     def generate_document_qr(self):
         if self.is_generating or not self.selected_image_file_path: return
         self.is_generating = True
@@ -1359,7 +935,6 @@ class IssuerApp:
         
         self.active_issuer_data["priv_key_pem"] = key
         
-        # This is the correct, working sequence
         self.populate_config_from_issuer_data()
         self.populate_ui_from_config()
 
@@ -1367,7 +942,6 @@ class IssuerApp:
         s = self.active_issuer_data.get("settings", {})
         ftp_settings = s.get("ftp_settings", {})
         
-        # Re-create the AppConfig object from the loaded file, as per the working version
         self.config = AppConfig(
             randomize_lkey_name=s.get("randomize_lkey_name", False),
             apply_watermark=s.get("apply_watermark", False),
@@ -1383,7 +957,6 @@ class IssuerApp:
             enable_audit_trail=s.get("enable_audit_trail", False)
         )
         
-        # Also load the non-AppConfig state from the settings dictionary 's'
         self.last_auto_inc_num = s.get("auto_increment_last_num", 0)
         self.mask_string_var.set(s.get("doc_num_mask", "####-MM/YY"))
         
@@ -1414,7 +987,6 @@ class IssuerApp:
         self.apply_logo_watermark_var.set(self.config.apply_logo_watermark)
         self.randomize_lkey_name_var.set(self.config.randomize_lkey_name)
         
-        # Crucially, update the UI previews for the newly loaded mask and number state
         if hasattr(self, "mask_sample_label"):
             self._update_mask_sample_label()
         if hasattr(self, "doc_num_entry"):
@@ -1449,9 +1021,7 @@ class IssuerApp:
                                     "Hardened Security is ON.\n\nTo create a complete backup, the private key will be temporarily moved from the OS Keychain to a file. It will be moved back and the file securely deleted when the backup is finished.\n\nProceed?"):
                 return
 
-        # A robust try/finally block to ensure security is always restored
         try:
-            # --- Temporarily Disable Hardened Security if needed ---
             if is_hardened:
                 logging.info("Temporarily disabling hardened security for backup.")
                 key_from_keystore = self.crypto_manager.load_private_key_from_keystore(self.active_issuer_id)
@@ -1464,7 +1034,6 @@ class IssuerApp:
                 show_error("Files Missing", "Could not find the necessary key or settings file to back up.")
                 return
 
-            # --- Perform the Backup ---
             default_filename = f"opn-czami-backup-{self.active_issuer_id}-{datetime.date.today()}.zip"
             save_path_str = filedialog.asksaveasfilename(
                 title="Save Secure Backup As...",
@@ -1473,7 +1042,6 @@ class IssuerApp:
                 filetypes=[("ZIP Archives", "*.zip")]
             )
             if not save_path_str:
-                # User cancelled save dialog
                 return
 
             save_path = Path(save_path_str)
@@ -1489,7 +1057,6 @@ class IssuerApp:
                 show_error("Backup Failed", f"An error occurred while creating the backup file:\n\n{e}")
 
         finally:
-            # --- ALWAYS restore hardened security if it was on ---
             if is_hardened:
                 logging.info("Restoring hardened security after backup.")
                 if self.crypto_manager.save_private_key_to_keystore(self.active_issuer_id, original_priv_key_pem):
@@ -1574,16 +1141,10 @@ class IssuerApp:
             "infoUrl": self.active_issuer_data["infoUrl"]
              }
             
-        # 1. Convert to JSON string (compact format)
         json_string = json.dumps(payload, separators=(',', ':'))
-    
-        # 2. Compress with deflate
         compressed_data = zlib.compress(json_string.encode('utf-8'), level=9)
-    
-        # 3. Encode as base45
         qr_data = base45.b45encode(compressed_data).decode('ascii')
     
-        # Generate QR with the compact data
         self.issuer_qr_image_pil = self.image_processor.generate_qr_with_logo(
             qr_data,
             self.original_status_logo_pil,
@@ -1596,7 +1157,6 @@ class IssuerApp:
         self.issuer_qr_display_label.config(image=img_tk)
         self.issuer_qr_display_label.image = img_tk
       
-        
     def browse_and_set_image_file(self):
         if not self.reset_upload_button_state(): return
         if not (filepath_str := filedialog.askopenfilename(title="Select image file", filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp"), ("All files", "*.*")])):
@@ -1615,49 +1175,28 @@ class IssuerApp:
             show_error("Image Load Error", f"Could not load image: {e}")
             self.clear_lkey_image_display()
 
-    
     def get_full_remote_path(self) -> Union[str, None]:
-        """
-        Safely constructs the full remote path for FTP uploads, preventing path traversal.
-        This version uses posixpath to correctly handle URL-like paths regardless of the host OS.
-        """
         if not self.active_issuer_data: return None
         try:
-            # Get the configured root directory for FTP.
             ftp_root = self.config.ftp_path.strip()
             if not ftp_root:
                 show_error("Configuration Error", "FTP Web Root Path is not set in Settings.")
                 return None
-
-            # Get the path component from the Image Base URL.
             image_base_url_path = urlparse(self.active_issuer_data.get("imageBaseUrl", "")).path
-
-            # Safely join the paths using posixpath, which always uses forward slashes.
-            # lstrip removes any leading slashes from the second part to ensure a clean join.
             full_path = posixpath.join(ftp_root, image_base_url_path.lstrip('/\\'))
-
-            # Normalize the path to resolve components like '..' (e.g., /a/b/../c -> /a/c)
-            # This is crucial for the security check.
             normalized_path = posixpath.normpath(full_path)
             normalized_root = posixpath.normpath(ftp_root)
-
-            # Security Check: Ensure the final, normalized path is still inside the intended root directory.
-            # This prevents traversal attacks (e.g., `../../etc/passwd`).
             if not normalized_path.startswith(normalized_root):
                 err_msg = "Path traversal detected: The Image Base URL attempts to go outside the FTP Web Root."
                 logging.error(err_msg)
                 show_error("Security Error", err_msg)
                 return None
-            
-            # Return the safe, clean, POSIX-style path for the FTP server.
             return normalized_path
-
         except Exception as e:
             logging.error(f"Error calculating full remote path: {e}", exc_info=True)
             show_error("Configuration Error", "The Image Base URL or FTP Path is invalid.")
             return None
     
-
     def _upload_single_file(self, local_path: Path):
         remote_dir = self.get_full_remote_path()
         if not remote_dir:
@@ -1741,25 +1280,6 @@ class IssuerApp:
         except Exception as e:
             self.root.after(0, lambda err=e: show_error("Upload Error", f"An unexpected error occurred during public file upload: {err}"))
             
-    def _upload_single_file(self, local_path: Path):
-
-            remote_dir = self.get_full_remote_path()
-            if not remote_dir:
-                return False, "Could not determine FTP remote path. Check settings."
-                
-            ftp_settings = self._get_active_ftp_settings()
-            if not ftp_settings:
-                return False, "Could not get FTP settings."
-
-            result = self.ftp_manager.upload_file(local_path, remote_dir, local_path.name, ftp_settings)
-            
-            is_success = "successful" in result.lower()
-            if self.config.enable_audit_trail and self.license_manager.is_feature_enabled("audit"):
-                event_type = "UPLOAD_SUCCESS" if is_success else "UPLOAD_FAILURE"
-                self.crypto_manager.log_event(self.active_issuer_id, self.active_issuer_data["priv_key_pem"], event_type, {"filename": local_path.name, "result_message": result})
-            
-            return is_success, result
-
     def upload_lkey_file_threaded(self):
         if not self.prepared_upload_path or self.upload_button_state == UploadButtonState.UPLOADING: return
         self.upload_button_state = UploadButtonState.UPLOADING
@@ -1768,83 +1288,35 @@ class IssuerApp:
         self.upload_progress_bar.start()
         threading.Thread(target=self._run_and_show_upload_result, args=(self.prepared_upload_path,), daemon=True).start()
 
-    def _update_ui_for_successful_document_processing(self, was_auto_upload: bool):
-        """
-        Updates the UI elements after a document has been successfully signed
-        and potentially auto-uploaded.
-        """
-        # Ensure QR and LKey displays are updated
-        self.update_qr_display(self.qr_image_pil)
-        final_lkey_image = Image.open(self.prepared_upload_path)
-        lkey_with_overlay = self.image_processor.overlay_checkmark(final_lkey_image)
-        self.update_lkey_display(lkey_with_overlay)
-
-        # Show all action buttons initially (folder buttons are always useful)
-        self._show_qr_action_buttons()
-        self.lkey_folder_button.config(state=NORMAL)
-        self.qr_folder_button.config(state=NORMAL)
-
-        # Handle Print/Email buttons and main Upload button based on auto-upload status
-        if was_auto_upload:
-            self.upload_button_state = UploadButtonState.SUCCESS # Main upload button turns green
-            self.qr_print_button.config(state=NORMAL)
-            self.qr_email_button.config(state=NORMAL)
-        else: # Manual upload flow: main button is ready, Print/Email still disabled
-            self.upload_button_state = UploadButtonState.READY
-            self.qr_print_button.config(state=DISABLED)
-            self.qr_email_button.config(state=DISABLED)
-
-        self.update_upload_button_display() # Refresh the main upload button's appearance
-        logging.info(f"UI updated for successful document processing (Auto-upload: {was_auto_upload}).")
-
     def _update_ui_after_signing_success(self, was_auto_upload_successful: bool):
             """
             Updates the UI elements after a document has been successfully signed
             and potentially auto-uploaded, or prepared for manual upload.
             This runs on the main Tkinter thread.
             """
-            # Ensure QR and LKey displays are updated
             self.update_qr_display(self.qr_image_pil)
             final_lkey_image = Image.open(self.prepared_upload_path)
             lkey_with_overlay = self.image_processor.overlay_checkmark(final_lkey_image)
             self.update_lkey_display(lkey_with_overlay)
 
-            # Show all action buttons (folder buttons are always useful)
             self._show_qr_action_buttons()
             self.lkey_folder_button.config(state=NORMAL)
             self.qr_folder_button.config(state=NORMAL)
 
-            # Determine state of main upload button and Print/Email buttons
             if was_auto_upload_successful:
-                self.upload_button_state = UploadButtonState.SUCCESS # Main upload button turns green
+                self.upload_button_state = UploadButtonState.SUCCESS
                 self.qr_print_button.config(state=NORMAL)
                 self.qr_email_button.config(state=NORMAL)
-            else: # Manual upload flow: main button is ready, Print/Email still disabled
+            else:
                 self.upload_button_state = UploadButtonState.READY
                 self.qr_print_button.config(state=DISABLED)
                 self.qr_email_button.config(state=DISABLED)
 
-            self.update_upload_button_display() # Refresh the main upload button's appearance
+            self.update_upload_button_display()
             logging.info(f"UI updated after signing success (Auto-upload successful: {was_auto_upload_successful}).")
             
-            # Stop and hide progress bar here as it's the final UI update after processing
             self.upload_progress_bar.stop()
             self.upload_progress_bar.grid_remove()
-
-    def _update_ui_for_auto_upload_failure(self):
-        """Updates the UI when auto-upload fails after signing."""
-        self.upload_button_state = UploadButtonState.FAILURE # Main upload button turns red (retry)
-        self.update_upload_button_display()
-        # Keep Print/Email buttons disabled as auto-upload failed
-        self.qr_print_button.config(state=DISABLED)
-        self.qr_email_button.config(state=DISABLED)
-        # Folder buttons should remain enabled if they were already
-        if hasattr(self, "lkey_folder_button"):
-            self.lkey_folder_button.config(state=NORMAL)
-        if hasattr(self, "qr_folder_button"):
-            self.qr_folder_button.config(state=NORMAL)
-        logging.warning("UI updated for auto-upload failure.")
-
           
     def _run_and_show_upload_result(self, local_path: Path):
             """Worker function for manual upload, run in a background thread."""
@@ -1855,26 +1327,21 @@ class IssuerApp:
                 if not is_success:
                     self.root.after(0, lambda res=result: show_error("FTP Upload Error", res))
                 else:
-                    # Enable Print/Email buttons on manual upload success
                     self.root.after(0, lambda: self.qr_print_button.config(state=NORMAL))
                     self.root.after(0, lambda: self.qr_email_button.config(state=NORMAL))
                     
-                    # Securely delete the temporary upload file
                     if self.prepared_upload_path and self.prepared_upload_path.exists():
-                        self.prepared_upload_path.unlink() # Use standard, fast deletion
+                        self.prepared_upload_path.unlink()
                         logging.info(f"Deleted temporary upload file: {self.prepared_upload_path.name}")
                         
             except Exception as e:
                 logging.error(f"Error in manual upload worker: {e}", exc_info=True)
                 self.root.after(0, lambda err=e: show_error("Upload Error", f"An unexpected error occurred during manual upload: {err}"))
-                self.upload_button_state = UploadButtonState.FAILURE # Ensure UI reflects failure
+                self.upload_button_state = UploadButtonState.FAILURE
             finally:
-                # Always stop and hide progress bar after manual upload completes
                 self.root.after(0, self.upload_progress_bar.stop)
                 self.root.after(0, self.upload_progress_bar.grid_remove)
-                self.root.after(0, self.update_upload_button_display) # Update main upload button's final state
-
-    
+                self.root.after(0, self.update_upload_button_display)
 
     def handle_auto_sense_threaded(self):
         host, user, password = self.ftp_host_var.get(), self.ftp_user_var.get(), self.ftp_pass_var.get()
@@ -1886,6 +1353,8 @@ class IssuerApp:
         threading.Thread(target=self._sense_ftp_root_worker, args=(host, user, password), daemon=True).start()
 
     def _sense_ftp_root_worker(self, host, user, password):
+        # This function can be moved to FTPManager in a future refactor
+        import ftplib
         COMMON_WEB_ROOTS = ["public_html", "htdocs", "httpdocs", "www", "html"]
         try:
             with ftplib.FTP(host, timeout=15) as ftp:
@@ -1929,7 +1398,6 @@ class IssuerApp:
         self.status_logo_label.image = img_tk
 
     def _open_lkey_save_location(self):
-        """Opens the folder where the signed LKey was saved."""
         lkey_path = Path(self.config.legato_files_save_path)
         if lkey_path.exists():
             webbrowser.open(f"file:///{lkey_path.resolve()}")
@@ -1937,8 +1405,6 @@ class IssuerApp:
             show_error("Path Not Found", f"The directory '{lkey_path}' does not exist.")
 
     def _open_qr_save_location(self):
-        """Opens the folder where the QR code image was saved."""
-        # QR path is now the same as the LKey path
         qr_path = Path(self.config.legato_files_save_path)
         if qr_path.exists():
             webbrowser.open(f"file:///{qr_path.resolve()}")
@@ -1946,19 +1412,14 @@ class IssuerApp:
             show_error("Path Not Found", f"The directory '{qr_path}' does not exist.")
 
     def _show_qr_action_buttons(self):
-        """Places all overlay buttons on the LKey and QR frames."""
-        # QR Frame Buttons (bottom-left and bottom-right)
         if hasattr(self, "qr_folder_button"):
             self.qr_folder_button.place(relx=0.0, rely=1.0, x=5, y=-5, anchor=SW)
             self.qr_email_button.place(relx=1.0, rely=1.0, x=-5, y=-5, anchor=SE)
             self.qr_print_button.place(relx=1.0, rely=1.0, x=-45, y=-5, anchor=SE)
-        
-        # LKey Frame Button (bottom-right)
         if hasattr(self, "lkey_folder_button"):
             self.lkey_folder_button.place(relx=1.0, rely=1.0, x=-5, y=-5, anchor=SE)
 
     def _hide_qr_action_buttons(self):
-        """Removes all overlay action buttons."""
         if hasattr(self, "qr_print_button"):
             self.qr_print_button.place_forget()
             self.qr_email_button.place_forget()
@@ -1968,7 +1429,6 @@ class IssuerApp:
             self.lkey_folder_button.place_forget()
 
     def print_document_qr(self):
-        """Handles printing the generated document QR code."""
         if not self.qr_image_pil:
             show_error("Print Error", "No QR Code image is available to print.")
             return
@@ -1985,7 +1445,6 @@ class IssuerApp:
             show_error("Printing Error", f"Could not open image for printing: {e}")
 
     def email_document_qr(self):
-        """Opens the default email client with the document QR attached."""
         if not self.qr_image_pil or not self.last_signed_payload:
             show_error("Email Error", "No QR Code or payload data is available to email.")
             return
@@ -2294,65 +1753,53 @@ class IssuerApp:
         ttk.Button(btn_frame, text="🗑️ Delete ID-entity", command=self.delete_identity, bootstyle=DANGER).grid(row=0, column=3, sticky="ew", padx=(2, 0))
 
     def create_signer_tab(self, parent_frame):
-        # --- Main container ---
         main_container = ttk.Frame(parent_frame)
         main_container.pack(fill="both", expand=True)
         
-        # --- Main Encoder Frame ---
         self.encoder_frame = ttk.LabelFrame(main_container, text="🖊️ Sign a New Document", padding="10")
         self.encoder_frame.pack(fill="both", expand=True)
         self.encoder_frame.grid_columnconfigure((0, 1), weight=1, uniform="signer_columns")
-        self.encoder_frame.grid_rowconfigure(3, weight=1) # Set row 3 (display area) to expand
+        self.encoder_frame.grid_rowconfigure(3, weight=1)
 
-        # --- Top Section: Image Select and Summary ---
         input_area_frame = ttk.Frame(self.encoder_frame)
         input_area_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         input_area_frame.grid_columnconfigure(1, weight=1)
         
-        # Left side - Browse button
         self.browse_button = ttk.Button(input_area_frame, text="📄 Select Image...", command=self.browse_and_set_image_file, bootstyle="primary-outline")
         self.browse_button.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         
-        # Summary frame with inline document number option
         summary_frame = ttk.Frame(input_area_frame)
         summary_frame.grid(row=0, column=1, sticky="nsew")
         summary_frame.grid_columnconfigure(0, weight=1)
         summary_frame.grid_rowconfigure(1, weight=1)
         
-        # Header with summary label and doc number controls
         header_frame = ttk.Frame(summary_frame)
         header_frame.grid(row=0, column=0, sticky="ew")
         header_frame.grid_columnconfigure(0, weight=1)
         
         ttk.Label(header_frame, text="Document Summary / Message:").grid(row=0, column=0, sticky="w")
  
-        # Document number controls frame (appears on same line when toggled)
         self.doc_num_frame = ttk.Frame(header_frame)
         self.doc_num_frame.grid(row=0, column=1, sticky="e", padx=(10, 5))
         
-        # Entry for the number preview/manual entry
         self.doc_num_entry = ttk.Entry(self.doc_num_frame, textvariable=self.doc_num_var, width=20, font=("TkDefaultFont", 9))
         self.doc_num_entry.grid(row=0, column=0, padx=(0, 5))
         self.doc_num_var.trace_add("write", self._validate_doc_num_len)
         
-        # The single "Auto" checkbox that is now mask-aware
         self.auto_gen_check = ttk.Checkbutton(self.doc_num_frame, text="Auto", variable=self.auto_gen_doc_num_var, 
                                               command=self._on_auto_toggle)
         self.auto_gen_check.grid(row=0, column=1, padx=(0, 10))
 
-        # Toggle button to show/hide the whole frame
         ttk.Checkbutton(header_frame, text="+ Doc #", 
                     variable=self.include_doc_num_var, 
                     bootstyle="round-toggle",
                     command=self._toggle_doc_num_frame_visibility).grid(row=0, column=2, sticky="e")
         
-        self.doc_num_frame.grid_remove()  # Initially hidden
+        self.doc_num_frame.grid_remove()
       
-        # Text area
         self.message_text = ttk.Text(summary_frame, height=4, wrap="word")
         self.message_text.grid(row=1, column=0, sticky="nsew")
         
-        # Status line frame
         status_line_frame = ttk.Frame(input_area_frame)
         status_line_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         self.char_count_label = ttk.Label(status_line_frame, text=f"0 / {MAX_SUMMARY_CHARS}", bootstyle="secondary")
@@ -2361,13 +1808,11 @@ class IssuerApp:
         self.doc_id_helper_label.pack(side="left", fill="x", expand=True)
         self.message_text.bind("<KeyRelease>", self._validate_summary_length)
 
-        # --- Main Action Buttons ---
         self.generate_qr_button = ttk.Button(self.encoder_frame, text="✨ Fingerprint, Sign & Save", command=self.generate_document_qr, bootstyle=PRIMARY, state="disabled")
         self.generate_qr_button.grid(row=2, column=0, sticky="ew", ipady=5, padx=(0, 5), pady=10)
         self.upload_button = ttk.Button(self.encoder_frame, text="🚀 Upload LKey", command=self.upload_lkey_file_threaded, state="disabled")
         self.upload_button.grid(row=2, column=1, sticky="ew", ipady=5, padx=(5, 0), pady=10)
         
-        # --- Display Frames ---
         lkey_lf = ttk.LabelFrame(self.encoder_frame, text="Fingerprinted Legato Key Image")
         lkey_lf.grid(row=3, column=0, sticky="nsew", padx=(0, 5), pady=(10,0))
         lkey_lf.grid_columnconfigure(0, weight=1)
@@ -2515,7 +1960,6 @@ class IssuerApp:
             ttk.Label(audit_frame, text="Purchase a Pro license to enable this.", bootstyle="info").pack(anchor="w", pady=(5, 0))      
         self._update_ftp_dependent_widgets_state()
             
-    # --- NEW FRAME FOR DOCUMENT NUMBER SETTINGS ---
         doc_num_settings_frame = ttk.LabelFrame(right_container, text="💎 Document Number Mask (Pro Feature)", padding=15)
         doc_num_settings_frame.pack(fill="x", expand=False, pady=(10, 0))
 
@@ -2523,7 +1967,6 @@ class IssuerApp:
 
         ttk.Label(doc_num_settings_frame, text="Define a mask for the 'Auto' number generator:").pack(anchor="w")
         
-        # This entry correctly links to mask_string_var. There are NO save bindings.
         mask_entry_settings = ttk.Entry(doc_num_settings_frame, textvariable=self.mask_string_var)
         mask_entry_settings.pack(fill="x", pady=(5, 2))
 
@@ -2532,19 +1975,14 @@ class IssuerApp:
 
         ttk.Label(doc_num_settings_frame, text="Placeholders: YYYY, YY, MM, DD, #### (number)", bootstyle="info", font="-size 8").pack(anchor="w", pady=(5,0))
         
-        # This trace ONLY updates the UI sample, it does NOT save anything. This is safe.
         self.mask_string_var.trace_add("write", self._update_mask_sample_label)
-        self._update_mask_sample_label() # Set initial sample text
+        self._update_mask_sample_label()
 
-        # Handle the license check
         if not is_masking_licensed:
             mask_entry_settings.config(state=DISABLED)
-            self.mask_string_var.set("") # Clear the var to prevent use
+            self.mask_string_var.set("")
             self.mask_sample_label.config(text="Sample: Pro license required")
             
-          
-  
-
     def create_guide_tab(self, parent_frame):
         import textwrap
         parent_frame.grid_columnconfigure(0, weight=1)
@@ -2680,7 +2118,6 @@ class IssuerApp:
 
     # --- Event Handlers and UI Helpers ---
     def handle_license_drop(self, event):
-        """Handles dropping a license file onto the 'About' tab."""
         filepath_str = event.data.strip("{}")
         dropped_path = Path(filepath_str)
         if dropped_path.name.lower() != "license.key":
@@ -2712,7 +2149,6 @@ class IssuerApp:
                     self.drop_zone_label.config(text=about_text, bootstyle=INFO)
     
     def reset_upload_button_state(self):
-        """Resets the upload button to its initial state."""
         self.upload_button_state = UploadButtonState.INITIAL
         self.update_upload_button_display()
         self.last_signed_payload = None
@@ -2720,7 +2156,6 @@ class IssuerApp:
         return True
 
     def update_upload_button_display(self):
-        """Updates the text, style, and state of the upload button."""
         if not hasattr(self, "upload_button"): return
         text, style, state = self.upload_button_state.value
         if self.config.ftp_auto_upload and self.upload_button_state == UploadButtonState.INITIAL:
@@ -2765,12 +2200,10 @@ class IssuerApp:
             self.system_is_verified = True
 
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            # Catches DNS errors (gibberish websites), timeouts, and other connection issues.
             logging.error(f"System status check failed due to a connection error: {e}", exc_info=True)
             details = "Connection failed. Please check your internet connection and verify the server URL in your settings."
             self.root.after(0, update_ui, "⚠️ OFFLINE OR CONFIG ERROR!", DANGER, details)
         except requests.exceptions.RequestException as e:
-            # General catch-all for other HTTP errors (like 404 Not Found, 500 Server Error)
             logging.error(f"System status check failed with an HTTP error: {e}", exc_info=True)
             details = f"The server returned an error. Please ensure the URL is correct and the server is running."
             self.root.after(0, update_ui, "⚠️ OFFLINE OR CONFIG ERROR!", DANGER, details)
@@ -2802,23 +2235,21 @@ class IssuerApp:
             logging.error(f"Failed to fetch logo from {url}: {e}", exc_info=True)
             return None
 
+
 if __name__ == "__main__":
     # --- Platform-specific setup ---
     if sys.platform == "win32":
         import ctypes
         from ctypes import windll
         try:
-            # Set DPI awareness. This is crucial for modern displays.
-            windll.shcore.SetProcessDpiAwareness(2) # For Windows 8.1+
+            windll.shcore.SetProcessDpiAwareness(2)
         except (AttributeError, OSError):
             try:
                 windll.user32.SetProcessDPIAware() 
             except Exception as e:
-                # This is not critical, so we just log the error.
                 logging.error(f"Could not set DPI awareness: {e}")
         
-        # This ID helps Windows group the app's windows under one taskbar icon.
-        myappid = "com.mazloumlevif.opnczami.v4.4.2.final" # Make it unique
+        myappid = "com.mazloumlevif.opnczami.v4.4.2.final"
         windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
     from tkinterdnd2 import DND_FILES, TkinterDnD
