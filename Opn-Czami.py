@@ -14,11 +14,14 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see
 # <https://www.gnu.org/licenses/>.
-# VERSION = "4.5.0" Lky redesign
+# 
 
 
 # --- Standard Library Imports ---
 import base64
+import base45
+import cbor2
+import keyring
 import base58
 import datetime
 import ftplib
@@ -38,10 +41,16 @@ import threading
 import webbrowser
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Union
+import zlib
+import posixpath 
 from urllib.parse import urlparse
+
+#import extern
+import math
 
 # --- Third-Party Imports ---
 import keyring
@@ -67,7 +76,7 @@ except ImportError:
 from license_manager import LicenseManager, get_app_data_path
 
 # --- Application Constants ---
-APP_VERSION = "4.5.0"
+APP_VERSION = "2.0.0"
 APP_NAME = "OpnCzami"
 KEYRING_SERVICE_NAME = "OperatorIssuerApp"
 KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
@@ -89,8 +98,22 @@ LOG_DIR = APP_DATA_DIR / "logs"
 APP_LOG_FILE = LOG_DIR / "opn-czami-app.log"
 
 # --- Directory Creation ---
-(APP_DOCS_DIR / "Signed_Legato_Keys").mkdir(parents=True, exist_ok=True) # Changed from Signed_Proofs
+(APP_DOCS_DIR / "Legato_Keys").mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- Application-Specific Enums & Data Structures ---
+
+# Document and Item type definitions
+DOC_TYPES = {
+"2": "Valuation Letter", "3": "Report", "4": "Other"
+}
+ITEM_TYPES = {
+    "1": "Violin", "2": "Viola", "3": "Cello", "4": "Double Bass",
+    "5": "Violin bow", "6": "Viola bow", "7": "Cello bow", "8": "Double Bass bow",
+    "9": "Custom", "10": "Custom bow"
+}
+DOC_TYPES_REVERSE = {v: k for k, v in DOC_TYPES.items()}
+ITEM_TYPES_REVERSE = {v: k for k, v in ITEM_TYPES.items()}
 
 
 # --- Pro Features Handling ---
@@ -181,6 +204,7 @@ def show_info(title: str, message: str):
     """Convenience function for showing a messagebox info dialog."""
     logging.info(f"{title}: {message}")
     messagebox.showinfo(title, message)
+
 
 # --- Core Application Logic Classes ---
 class SettingsManager:
@@ -288,6 +312,23 @@ class CryptoManager:
 
     def delete_ftp_password(self, issuer_id: str):
         self._delete_from_keystore(f"{issuer_id}_ftp")
+        
+    @lru_cache(maxsize=2) # Cache the last 2 keys, just in case
+    def get_private_key(self, key_location: str, issuer_id: str, key_path: Path = None) -> Union[str, None]:
+        """
+        Loads the private key from its source (keystore or file) and caches the result.
+        This method is the single point of entry for retrieving a private key.
+        """
+        logging.info(f"Loading private key for {issuer_id} from {key_location}...")
+        if key_location == KeyStorage.KEYSTORE.value:
+            return self.load_private_key_from_keystore(issuer_id)
+        elif key_location == KeyStorage.FILE.value and key_path:
+            try:
+                return key_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                show_error("Fatal Error", f"Private key file missing: {key_path}. The identity is unusable.")
+                return None
+        return None
     
     @staticmethod
     def sign_raw_bytes(private_key_pem: str, data_bytes: bytes) -> str:
@@ -623,6 +664,7 @@ class ImageProcessor:
         return qr_img.convert("RGB")
 
 class IssuerApp:
+   
     def __init__(self, root: ttk.Window):
         self.root = root
         self._configure_root_window()
@@ -670,6 +712,13 @@ class IssuerApp:
         self.lkey_image_tk = None
         self.original_status_logo_pil = None
         self.logo_path = None
+        # --- Variables for Enhanced Signing ---
+        self.include_doc_num_var = ttk.BooleanVar(value=False)
+        self.auto_gen_doc_num_var = ttk.BooleanVar(value=False)
+        self.doc_num_var = ttk.StringVar()
+        self.use_mask_var = ttk.BooleanVar(value=False)     
+        self.mask_string_var = ttk.StringVar(value="####-MM/YY") 
+        # --- END OF NEW VARIABLES ---
         self.url_path_var = ttk.StringVar(value="https://")
         self.image_base_url_var = ttk.StringVar()
         self.ftp_host_var = ttk.StringVar()
@@ -727,11 +776,17 @@ class IssuerApp:
     def on_close(self):
         """Handles application shutdown procedures."""
         temp_dir = APP_DATA_DIR / "temp_upload"
-        if temp_dir.exists():
+        if temp_dir.exists() and temp_dir.is_dir():
             try:
+                # Securely delete all files within the temp directory
+                for item in temp_dir.iterdir():
+                    if item.is_file():
+                        item.unlink()
+                # Now that it's empty, remove the directory itself
                 shutil.rmtree(temp_dir)
+                logging.info(f"Securely cleared and removed temp directory: {temp_dir}")
             except OSError as e:
-                logging.warning(f"Could not remove temp directory on exit: {e}")
+                logging.warning(f"Could not fully remove temp directory on exit: {e}")
         self.root.destroy()
 
     def _apply_dpi_scaling(self, event=None):
@@ -789,6 +844,42 @@ class IssuerApp:
         except Exception as e:
             logging.error(f"Could not set window icon: {e}", exc_info=True)
 
+
+
+    def _on_custom_item_focus(self, *args):
+        """When the user clicks into the custom item box, deselect radio buttons."""
+        self.primary_item_type_var.set("") # Deselects all radio buttons
+        self._on_item_selection_change()
+
+    def _on_item_selection_change(self, *args):
+        """Updates the item selection based on the primary instrument and bow modifier."""
+        primary_selection = self.primary_item_type_var.get()
+        is_bow = self.bow_modifier_var.get()
+        
+        # When a primary instrument is selected, the bow is always an option
+        self.bow_toggle_button.config(state="normal")
+        
+        final_code = ""
+        description = ""
+
+        if primary_selection == "01": # Violin
+            final_code = "05" if is_bow else "01"
+            description = "Violin bow" if is_bow else "Violin"
+        elif primary_selection == "02": # Viola
+            final_code = "06" if is_bow else "02"
+            description = "Viola bow" if is_bow else "Viola"
+        elif primary_selection == "03": # Cello
+            final_code = "04" if is_bow else "03"
+            description = "Cello bow" if is_bow else "Cello"
+        elif primary_selection == "07": # Custom Text
+            final_code = "07" # Always use the "custom" code
+            custom_text = self.custom_item_type_var.get().strip() or "[Custom Item]"
+            description = f"{custom_text} bow" if is_bow else custom_text
+        
+        self.item_type_var.set(final_code)
+        self.selected_item_label_var.set(f"Selected: {description}")
+        self._update_bow_button_style()
+    
     def _show_upgrade_prompt(self, feature_name: str):
         """Displays a standard dialog for Pro-only features."""
         show_info("Professional Feature", f"'{feature_name}' is a Professional feature.\n\nPlease purchase a license to unlock this functionality.")
@@ -824,7 +915,32 @@ class IssuerApp:
         else:
             self.audit_status_label.config(text="Audit Trail is a Professional Feature.", bootstyle=INFO)
             self._show_upgrade_prompt("Audit Trail")
- 
+    def _apply_number_mask(self) -> str:
+        """Applies the user-defined mask to the next auto-increment number."""
+        mask = self.mask_string_var.get()
+        if not mask:
+            return ""
+        next_num = self.last_auto_inc_num + 1
+        now = datetime.datetime.now()
+
+        # Replace date components
+        mask = mask.replace("YYYY", now.strftime("%Y"))
+        mask = mask.replace("YY", now.strftime("%y"))
+        mask = mask.replace("MM", now.strftime("%m"))
+        mask = mask.replace("DD", now.strftime("%d"))
+
+        # Replace number component
+        if "#" in mask:
+            num_placeholders = mask.count("#")
+            num_str = f"{next_num:0{num_placeholders}d}"
+            mask = mask.replace("#" * num_placeholders, num_str)
+        
+        return mask
+
+    def _on_auto_toggle(self, *args):
+        """Single handler for the 'Auto' checkbox which is now mask-aware."""
+        self._update_doc_num_entry_state()        
+             
     # --- Data Persistence and Identity Management ---
     def _sync_config_from_ui(self):
         self.config.ftp_host = self.ftp_host_var.get().strip()
@@ -855,6 +971,8 @@ class IssuerApp:
             "watermark_text": self.config.watermark_text, "legato_files_save_path": self.config.legato_files_save_path,
             "ftp_settings": ftp_settings,
             "enable_audit_trail": self.config.enable_audit_trail,
+            "auto_increment_last_num": self.last_auto_inc_num,
+            "doc_num_mask": self.mask_string_var.get()
         }
 
     def save_settings(self):
@@ -924,6 +1042,78 @@ class IssuerApp:
         self.config = AppConfig()
         self.update_ui_state()
         logging.info("Active identity and all associated files have been deleted.")
+
+    def _update_mask_sample_label(self, *args):
+        """Updates the sample text below the mask entry in settings."""
+        if hasattr(self, "mask_sample_label"):
+            try:
+                sample = self._apply_number_mask()
+                self.mask_sample_label.config(text=f"Sample: {sample}")
+            except Exception:
+                self.mask_sample_label.config(text="Sample: Invalid Mask")
+        
+    def _toggle_doc_num_frame_visibility(self, *args):
+        """Toggle visibility of document number frame."""
+        if self.include_doc_num_var.get():
+            self.doc_num_frame.grid(row=0, column=1, sticky="e", padx=(10, 5))
+        else:
+            self.doc_num_frame.grid_remove()
+
+    def _update_doc_num_entry_state(self, *args):
+        """Controls the document number entry field based on auto-gen/mask selection."""
+        is_masking_licensed = self.license_manager.is_feature_enabled("masked_ids")
+        mask_is_defined = self.mask_string_var.get().strip()
+
+        if self.auto_gen_doc_num_var.get():
+            self.doc_num_entry.config(state="readonly")
+            if is_masking_licensed and mask_is_defined:
+                self.doc_num_var.set(self._apply_number_mask())
+            else:
+                self.doc_num_var.set(self._get_next_auto_doc_num_str())
+        else:
+            self.doc_num_entry.config(state="normal")
+            self.doc_num_var.set("")
+
+    def _validate_doc_num_len(self, *args):
+        """Enforces a 10-character limit on the document number field."""
+        if not self.use_mask_var.get() and not self.auto_gen_doc_num_var.get():
+            val = self.doc_num_var.get()
+            if len(val) > 10:
+                self.doc_num_var.set(val[:10])
+
+    def _get_next_auto_doc_num_str(self) -> str:
+        """Generates the next document number string for display."""
+        next_num = self.last_auto_inc_num + 1
+        return f"{datetime.datetime.now().year}-{next_num:04d}"
+
+    def _apply_number_mask(self) -> str:
+        """Applies the user-defined mask to the next auto-increment number."""
+        mask = self.mask_string_var.get()
+        if not mask: return ""
+        next_num = self.last_auto_inc_num + 1
+        now = datetime.datetime.now()
+        mask = mask.replace("YYYY", now.strftime("%Y")).replace("YY", now.strftime("%y"))
+        mask = mask.replace("MM", now.strftime("%m")).replace("DD", now.strftime("%d"))
+        if "#" in mask:
+            num_placeholders = mask.count("#")
+            num_str = f"{next_num:0{num_placeholders}d}"
+            mask = mask.replace("#" * num_placeholders, num_str)
+        return mask
+
+    def _update_mask_sample_label(self, *args):
+        """Updates the sample text below the mask entry in settings."""
+        if hasattr(self, "mask_sample_label"):
+            try:
+                sample = self._apply_number_mask()
+                self.mask_sample_label.config(text=f"Sample: {sample}")
+            except Exception:
+                self.mask_sample_label.config(text="Sample: Invalid Mask")
+
+    def _on_auto_toggle(self, *args):
+        """Single handler for the 'Auto' checkbox which is now mask-aware."""
+        self._update_doc_num_entry_state()
+
+  
 
     def create_and_save_identity(self):
         name = self.name_entry.get().strip()
@@ -999,175 +1189,148 @@ class IssuerApp:
             show_error("Identity Creation Error", f"Failed to create identity: {e}")
 
     # --- Document Signing ---
-    def _generate_document_qr_threaded_worker(self, image_path: Path, summary_msg: str):
-            """
-            Worker function for the 'Fingerprint, Sign & Save' process, run in a background thread.
-            Handles UI updates by scheduling them back to the main thread.
-            """
-            try:
-                # 1. UI: Show and start progress bar immediately (scheduled from background to main thread)
-                self.root.after(0, self.upload_progress_bar.grid)
-                self.root.after(0, self.upload_progress_bar.start)
-
-                # 2. Core Logic: Perform signing and (if auto-upload is on) the upload
-                is_successful_signing, upload_performed_and_successful, result_message = self._sign_single_document(image_path, summary_msg)
-
-                if is_successful_signing:
-                    # 3. UI: Update UI for success (scheduled from background)
-                    self.root.after(0, lambda: self._update_ui_after_signing_success(upload_performed_and_successful))
-                else:
-                    # 4. UI: Show error message (scheduled from background)
-                    self.root.after(0, lambda msg=result_message: show_error("Signing Failed", msg))
-                    # Ensure main upload button is reset to default (disabled) or failure state
-                    self.root.after(0, lambda: setattr(self, 'upload_button_state', UploadButtonState.FAILURE))
-                    self.root.after(0, self.update_upload_button_display) # Update button color to red (retry)
-                    # Hide progress bar on failure (scheduled from background)
-                    self.root.after(0, self.upload_progress_bar.stop)
-                    self.root.after(0, self.upload_progress_bar.grid_remove)
-
-            except Exception as e:
-                logging.error(f"Error in document generation worker: {e}", exc_info=True)
-                self.root.after(0, lambda err=e: show_error("Process Error", f"An unexpected error occurred during document processing: {err}"))
-                # Ensure progress bar is stopped and hidden if an unexpected error occurs
-                self.root.after(0, self.upload_progress_bar.stop)
-                self.root.after(0, self.upload_progress_bar.grid_remove)
-            finally:
-                # Always re-enable the 'Fingerprint, Sign & Save' button
-                self.root.after(0, lambda: self.generate_qr_button.config(state=NORMAL))
-                self.is_generating = False # Reset flag for next operation
-        
-    def _sign_single_document(self, image_path: Path, summary_msg: str) -> tuple[bool, bool, str]:
+    def _generate_document_qr_threaded_worker(self, image_path: Path, details: dict):
         """
-        Creates a unified LKY file and a valid 3-part QR code that points to it.
-        The LKY file contains JPEG image data and has a .lky extension.
+        Worker function for the 'Fingerprint, Sign & Save' process, run in a background thread.
+        Handles UI updates by scheduling them back to the main thread.
         """
         try:
-            # --- Image Processing ---
+            self.root.after(0, self.upload_progress_bar.grid)
+            self.root.after(0, self.upload_progress_bar.start)
+
+            is_successful_signing, upload_performed_and_successful, result_message = self._sign_single_document(image_path, details)
+
+            if is_successful_signing:
+                self.root.after(0, lambda: self._update_ui_after_signing_success(upload_performed_and_successful))
+            else:
+                self.root.after(0, lambda msg=result_message: show_error("Signing Failed", msg))
+                self.root.after(0, lambda: setattr(self, 'upload_button_state', UploadButtonState.FAILURE))
+                self.root.after(0, self.update_upload_button_display)
+                self.root.after(0, self.upload_progress_bar.stop)
+                self.root.after(0, self.upload_progress_bar.grid_remove)
+
+        except Exception as e:
+            logging.error(f"Error in document generation worker: {e}", exc_info=True)
+            self.root.after(0, lambda err=e: show_error("Process Error", f"An unexpected error occurred during document processing: {err}"))
+            self.root.after(0, self.upload_progress_bar.stop)
+            self.root.after(0, self.upload_progress_bar.grid_remove)
+        finally:
+            self.root.after(0, lambda: self.generate_qr_button.config(state=NORMAL))
+            self.is_generating = False
+        
+
+        
+    def _sign_single_document(self, image_path: Path, details: dict) -> tuple[bool, bool, str]:
+        try:
+            # --- (All the data prep and LKY file creation logic remains the same) ---
             apply_text_watermark = self.config.apply_watermark and self.license_manager.is_feature_enabled("watermark")
             apply_logo_watermark = self.config.apply_logo_watermark and self.license_manager.is_feature_enabled("watermark")
             source_image = Image.open(image_path)
             watermarked_img = self.image_processor.apply_text_watermark(source_image, self.config.watermark_text, apply_text_watermark)
-            # Final image for the LKey, always converted to RGB for JPEG saving
             final_lkey_image = self.image_processor.apply_logo_watermark(watermarked_img, self.original_status_logo_pil, apply_logo_watermark).convert("RGB")
-            
-            # --- File Naming and Path Setup ---
             temp_dir = APP_DATA_DIR / "temp_upload"
             temp_dir.mkdir(exist_ok=True, parents=True)
-            
             sanitized_base = self.sanitize_filename(image_path.stem)
-            suffix = f"-{''.join(random.choices(string.ascii_lowercase + string.digits, k=4))}-LKey" if self.config.randomize_lkey_name else "-LKey"
+            suffix = f"-{''.join(random.choices(string.ascii_lowercase + string.digits, k=4))}" if self.config.randomize_lkey_name else ""
             upload_filename_stem = f"{sanitized_base}{suffix}"
-            
-            # 1. Define the final filename with a .lky extension.
             final_lkey_filename = f"{upload_filename_stem}.lky"
-            
             image_buffer = io.BytesIO()
-            # 2. Always save the internal image data as JPEG for consistency and standardization.
-            image_format = "JPEG"
-            image_mime_type = "image/jpeg"
-            final_lkey_image.save(image_buffer, format=image_format, quality=95)
+            final_lkey_image.save(image_buffer, format="JPEG", quality=95)
             image_bytes = image_buffer.getvalue()
-
-            # --- LKey File Assembly  ---
-            
-            # 3a. Use a temporary file to safely calculate the standalone image hash.
-            import uuid
-            temp_image_path = temp_dir / f"temp_hash_{uuid.uuid4().hex}.tmp"
-            try:
-                temp_image_path.write_bytes(image_bytes)
-                image_hash_internal = self.crypto_manager.calculate_file_hash(temp_image_path)
-                if not image_hash_internal: return False, False, "Could not calculate internal image hash."
-            finally:
-                if temp_image_path.exists(): temp_image_path.unlink()
-            
-            lky_payload_dict = {"imgId": final_lkey_filename, "msg": summary_msg, "h": image_hash_internal}
-            lky_payload_bytes = json.dumps(lky_payload_dict, separators=(",", ":")).encode("utf-8")
-            
-            # 3b. Create the LKey's signature by signing the RAW `image_bytes + payload_bytes`.
+            lky_payload_dict_verbose = {
+                "imgId": final_lkey_filename,
+                "message": details.get("m"), "docDate": datetime.date.today().isoformat(),
+                "docNumber": details.get("n"),
+            }
+            lky_payload_dict_verbose = {k: v for k, v in lky_payload_dict_verbose.items() if v is not None}
+            lky_payload_bytes = json.dumps(lky_payload_dict_verbose, separators=(",", ":")).encode("utf-8")
             data_to_sign_lky = image_bytes + lky_payload_bytes
             priv_key = serialization.load_pem_private_key(self.active_issuer_data["priv_key_pem"].encode("utf-8"), password=None)
-            signature = priv_key.sign(data_to_sign_lky)
-            lky_signature_b58 = base58.b58encode(signature).decode("utf-8")
-
-            # 3c. Assemble the complete polyglot LKY file.
+            lky_signature = priv_key.sign(data_to_sign_lky)
+            lky_signature_b64url = base64.urlsafe_b64encode(lky_signature).rstrip(b'=').decode('utf-8')
             manifest_dict = {
-                "signature": lky_signature_b58, "issuerId": self.active_issuer_id,
-                "imageLength": len(image_bytes), "payloadLength": len(lky_payload_bytes),
-                "imageMimeType": image_mime_type
+                "signature": lky_signature_b64url,
+                "signatureEncoding": "base64url", # Self-describing format is a best practice
+                "issuerId": self.active_issuer_id,
+                "imageLength": len(image_bytes),
+                "payloadLength": len(lky_payload_bytes),
+                "imageMimeType": "image/jpeg"
             }
-            lky_file_bytes = self.crypto_manager.assemble_lky_file(image_bytes, lky_payload_dict, manifest_dict)
+            lky_file_bytes = self.crypto_manager.assemble_lky_file(image_bytes, lky_payload_dict_verbose, manifest_dict)
             if not lky_file_bytes: return False, False, "Failed to assemble .lky file."
-            
             prepared_upload_path = temp_dir / final_lkey_filename
             prepared_upload_path.write_bytes(lky_file_bytes)
+            full_file_hash_hex = self.crypto_manager.calculate_file_hash(prepared_upload_path)
+            if not full_file_hash_hex: return False, False, "Could not calculate final file hash."
+            hash_bytes = bytes.fromhex(full_file_hash_hex)
+            qr_payload_dict_compact = {"i": upload_filename_stem, "h": hash_bytes, **details}
+            qr_payload_dict_compact = {k: v for k, v in qr_payload_dict_compact.items() if v is not None}
+            qr_payload_bytes = cbor2.dumps(qr_payload_dict_compact)
+            compressor = zlib.compressobj(level=9, wbits=-15)
+            qr_compressed_bytes = compressor.compress(qr_payload_bytes) + compressor.flush()
+            qr_signature = priv_key.sign(qr_compressed_bytes)
 
-            # --- QR Code Generation  ---
-
-            # 4a. Create the QR code's payload, containing the hash of the ENTIRE LKY file.
-            final_file_hash = self.crypto_manager.calculate_file_hash(prepared_upload_path)
-            if not final_file_hash: return False, False, "Could not calculate final file hash."
-            
-            qr_payload_dict = {"imgId": final_lkey_filename, "msg": summary_msg, "h": final_file_hash}
-
-            # 4b. Create the QR code's signature for its own payload.
-            qr_signature_b58 = self.crypto_manager.sign_payload(self.active_issuer_data["priv_key_pem"], qr_payload_dict)
-            
-            # 4c. Create the final 3-PART QR string for the mobile app parser.
-            qr_payload_b58 = base58.b58encode(json.dumps(qr_payload_dict, separators=(",", ":")).encode("utf-8")).decode("utf-8")
-            final_qr_string = f"{self.active_issuer_id}-{qr_payload_b58}-{qr_signature_b58}"
-            
-            # --- Finalization and Saving ---
+            binary_to_encode = qr_compressed_bytes + qr_signature
+            payload_b45 = base45.b45encode(binary_to_encode).decode('ascii')
+            issuer_id_upper = self.active_issuer_id.upper()
+            final_qr_data_for_lib = f"{issuer_id_upper}:{payload_b45}"
 
             if self.config.enable_audit_trail and self.license_manager.is_feature_enabled("audit"):
-                log_details = {"filename": final_lkey_filename, "message": summary_msg, "file_hash": final_file_hash}
+                log_details = {"filename": final_lkey_filename, "details": lky_payload_dict_verbose, "file_hash": full_file_hash_hex}
                 self.crypto_manager.log_event(self.active_issuer_id, self.active_issuer_data["priv_key_pem"], "SIGN_UNIFIED_SUCCESS", log_details)
-
             doc_logo_path = resource_path("legatokey.png")
             document_logo_pil = Image.open(doc_logo_path) if doc_logo_path.exists() else None
-            qr_image_pil = self.image_processor.generate_qr_with_logo(final_qr_string, document_logo_pil, sizing_ratio=0.40)
-            
-            # Create date-based subdirectory for local saves
+            qr_image_pil = self.image_processor.generate_qr_with_logo(final_qr_data_for_lib, document_logo_pil, sizing_ratio=0.39)
             now = datetime.datetime.now()
             local_save_dir = Path(self.config.legato_files_save_path) / f"{now.year}" / f"{now.month:02d}"
             local_save_dir.mkdir(parents=True, exist_ok=True)
-            
             qr_save_path = local_save_dir / f"{upload_filename_stem}-QR.png"
             qr_image_pil.save(qr_save_path)
-            
-            # Save local copy of the .lky file (now mandatory)
             shutil.copy(prepared_upload_path, local_save_dir / final_lkey_filename)
-            
             self.qr_image_pil = qr_image_pil
             self.prepared_upload_path = prepared_upload_path
-            self.last_signed_payload = f"{final_lkey_filename}|{summary_msg}|{final_file_hash}"
-
+            self.last_signed_payload = f"{final_lkey_filename}|{details.get('m','')}|{full_file_hash_hex}"
             is_auto_upload_successful = False
             if self.config.ftp_auto_upload:
                 is_auto_upload_successful, upload_result_msg = self._upload_single_file(prepared_upload_path)
                 if not is_auto_upload_successful: return False, False, f"Auto-upload failed: {upload_result_msg}"
-
             return True, is_auto_upload_successful, "LKey signed and processed successfully."
-        
         except Exception as e:
             logging.error(f"Error during document signing: {e}", exc_info=True)
             return False, False, f"Signing failed due to an unexpected error: {e}"
-        
+
         
     def generate_document_qr(self):
         if self.is_generating or not self.selected_image_file_path: return
         self.is_generating = True
         self.generate_qr_button.config(state=DISABLED)
         
-        # Reset other UI elements before starting new process
         self.upload_button_state = UploadButtonState.INITIAL
         self.update_upload_button_display()
         self._hide_qr_action_buttons()
 
-        summary_msg = self.message_text.get("1.0", "end-1c").strip()
+        details = { "m": self.message_text.get("1.0", "end-1c").strip() }
         
-        # Launch the heavy processing in a new thread
+        if self.include_doc_num_var.get():
+            doc_num = ""
+            is_masking_licensed = self.license_manager.is_feature_enabled("masked_ids")
+            mask_is_defined = self.mask_string_var.get().strip()
+
+            if self.auto_gen_doc_num_var.get():
+                if is_masking_licensed and mask_is_defined:
+                    doc_num = self._apply_number_mask()
+                else:
+                    doc_num = self._get_next_auto_doc_num_str()
+                self.last_auto_inc_num += 1
+                self.save_settings()
+            else:
+                doc_num = self.doc_num_var.get().strip()
+
+            if doc_num:
+                details["n"] = doc_num
+
         threading.Thread(target=self._generate_document_qr_threaded_worker, 
-                         args=(self.selected_image_file_path, summary_msg), 
+                         args=(self.selected_image_file_path, details), 
                          daemon=True).start()
 
     # --- Data Loading and UI Configuration ---
@@ -1183,67 +1346,83 @@ class IssuerApp:
         except (IOError, json.JSONDecodeError):
             self.all_issuer_data = {}
             logging.warning("Could not load or parse issuer DB file. Starting with empty data.")
+            
         self.active_issuer_data = self.all_issuer_data.get(self.active_issuer_id, data).copy()
         key_loc = self.active_issuer_data.get("priv_key_pem")
-        if key_loc == KeyStorage.KEYSTORE.value:
-            self.config.hardened_security = True
-            key = self.crypto_manager.load_private_key_from_keystore(self.active_issuer_id)
-            if not key:
-                show_error("Fatal Error", "Failed to load private key from OS keystore. The identity is unusable.")
-                self.active_issuer_data = None
-                return
-            self.active_issuer_data["priv_key_pem"] = key
-        elif key_loc == KeyStorage.FILE.value:
-            self.config.hardened_security = False
-            key_path = APP_DATA_DIR / KEY_FILENAME_TEMPLATE.format(issuer_id=self.active_issuer_id)
-            try:
-                self.active_issuer_data["priv_key_pem"] = key_path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                show_error("Fatal Error", f"Private key file missing: {key_path}. The identity is unusable.")
-                self.active_issuer_data = None
-                return
+        
+        # Determine hardened security state BEFORE populating the config object
+        self.config.hardened_security = (key_loc == KeyStorage.KEYSTORE.value)
+        
+        key_path = APP_DATA_DIR / KEY_FILENAME_TEMPLATE.format(issuer_id=self.active_issuer_id)
+        key = self.crypto_manager.get_private_key(key_loc, self.active_issuer_id, key_path)
+
+        if not key:
+            self.active_issuer_data = None
+            return
+        
+        self.active_issuer_data["priv_key_pem"] = key
+        
+        # This is the correct, working sequence
         self.populate_config_from_issuer_data()
         self.populate_ui_from_config()
 
     def populate_config_from_issuer_data(self):
         s = self.active_issuer_data.get("settings", {})
         ftp_settings = s.get("ftp_settings", {})
+        
+        # Re-create the AppConfig object from the loaded file, as per the working version
         self.config = AppConfig(
             randomize_lkey_name=s.get("randomize_lkey_name", False),
             apply_watermark=s.get("apply_watermark", False),
             apply_logo_watermark=s.get("apply_logo_watermark", False),
             watermark_text=s.get("watermark_text", "SIGNED"),
-            legato_files_save_path=s.get("legato_files_save_path", ""),
+            legato_files_save_path=s.get("legato_files_save_path", str(APP_DOCS_DIR / "Legato_Keys")),
             ftp_host=ftp_settings.get("host", ""),
             ftp_user=ftp_settings.get("user", ""),
             ftp_path=ftp_settings.get("path", ""),
             ftp_pass_b64=ftp_settings.get("pass_b64", ""),
-            ftp_auto_upload=ftp_settings.get("mode", FTPMode.MANUAL.value) == FTPMode.AUTOMATIC.value,
+            ftp_auto_upload=(ftp_settings.get("mode") == FTPMode.AUTOMATIC.value),
             hardened_security=self.config.hardened_security,
-            enable_audit_trail=s.get("enable_audit_trail", False),
+            enable_audit_trail=s.get("enable_audit_trail", False)
         )
+        
+        # Also load the non-AppConfig state from the settings dictionary 's'
+        self.last_auto_inc_num = s.get("auto_increment_last_num", 0)
+        self.mask_string_var.set(s.get("doc_num_mask", "####-MM/YY"))
+        
         logging.info("Configuration object populated from issuer data.")
 
     def populate_ui_from_config(self):
+        """Syncs the UI variables with the values in the self.config object."""
         self.ftp_host_var.set(self.config.ftp_host)
         self.ftp_user_var.set(self.config.ftp_user)
         self.ftp_path_var.set(self.config.ftp_path)
-        self.watermark_text_var.set(self.config.watermark_text)
-        self.legato_files_save_path_var.set(self.config.legato_files_save_path)
+        
         password = ""
-        if self.config.hardened_security:
-            password = self.crypto_manager.load_ftp_password(self.active_issuer_id) or ""
+        if self.config.hardened_security and self.active_issuer_id:
+             password = self.crypto_manager.load_ftp_password(self.active_issuer_id) or ""
         else:
             try:
-                password = base64.b64decode(self.config.ftp_pass_b64).decode("utf-8")
+                if self.config.ftp_pass_b64:
+                    password = base64.b64decode(self.config.ftp_pass_b64).decode("utf-8")
             except Exception: pass
         self.ftp_pass_var.set(password)
+
+        self.watermark_text_var.set(self.config.watermark_text)
+        self.legato_files_save_path_var.set(self.config.legato_files_save_path)
         self.hardened_security_var.set(self.config.hardened_security)
         self.enable_audit_trail_var.set(self.config.enable_audit_trail)
         self.ftp_auto_upload_var.set(self.config.ftp_auto_upload)
         self.apply_watermark_var.set(self.config.apply_watermark)
         self.apply_logo_watermark_var.set(self.config.apply_logo_watermark)
         self.randomize_lkey_name_var.set(self.config.randomize_lkey_name)
+        
+        # Crucially, update the UI previews for the newly loaded mask and number state
+        if hasattr(self, "mask_sample_label"):
+            self._update_mask_sample_label()
+        if hasattr(self, "doc_num_entry"):
+            self._update_doc_num_entry_state()
+        
         self.ftp_form_state = FormState.PRISTINE
         if hasattr(self, "save_and_upload_button"):
             self.save_and_upload_button.config(state=DISABLED)
@@ -1318,7 +1497,8 @@ class IssuerApp:
                 logging.info("Restoring hardened security after backup.")
                 if self.crypto_manager.save_private_key_to_keystore(self.active_issuer_id, original_priv_key_pem):
                     if key_filepath.exists():
-                        key_filepath.unlink() # Securely delete the temporary key file
+                        key_filepath.unlink()
+                        logging.info(f"Deleted temporary key file: {key_filepath.name}")
                     logging.info("Hardened security has been successfully re-enabled.")
                 else:
                     show_error("CRITICAL SECURITY FAILURE",
@@ -1385,17 +1565,41 @@ class IssuerApp:
 
     def update_issuer_qr_display(self):
         if not self.active_issuer_id:
-            if hasattr(self, "issuer_qr_display_label"): self.issuer_qr_display_label.config(image="")
+            if hasattr(self, "issuer_qr_display_label"):
+                self.issuer_qr_display_label.config(image="")
             self.issuer_qr_image_pil = None
             return
-        payload = {"qr_type": "issuer_info_v1", "id": self.active_issuer_id, "name": self.active_issuer_data["name"], "infoUrl": self.active_issuer_data["infoUrl"]}
-        self.issuer_qr_image_pil = self.image_processor.generate_qr_with_logo(json.dumps(payload), self.original_status_logo_pil, sizing_ratio=0.85)
+        
+        payload = {
+            "qr_type": "issuer_info_v1",
+            "id": self.active_issuer_id,
+            "issuername": self.active_issuer_data["name"],   
+            "infoUrl": self.active_issuer_data["infoUrl"]
+             }
+            
+        # 1. Convert to JSON string (compact format)
+        json_string = json.dumps(payload, separators=(',', ':'))
+    
+        # 2. Compress with deflate
+        compressed_data = zlib.compress(json_string.encode('utf-8'), level=9)
+    
+        # 3. Encode as base45
+        qr_data = base45.b45encode(compressed_data).decode('ascii')
+    
+        # Generate QR with the compact data
+        self.issuer_qr_image_pil = self.image_processor.generate_qr_with_logo(
+            qr_data,
+            self.original_status_logo_pil,
+            sizing_ratio=0.85
+        )
+    
         display_img = self.issuer_qr_image_pil.copy()
         display_img.thumbnail((250, 250), self.image_processor.resample_method)
         img_tk = ImageTk.PhotoImage(display_img)
         self.issuer_qr_display_label.config(image=img_tk)
         self.issuer_qr_display_label.image = img_tk
-
+      
+        
     def browse_and_set_image_file(self):
         if not self.reset_upload_button_state(): return
         if not (filepath_str := filedialog.askopenfilename(title="Select image file", filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp"), ("All files", "*.*")])):
@@ -1414,25 +1618,66 @@ class IssuerApp:
             show_error("Image Load Error", f"Could not load image: {e}")
             self.clear_lkey_image_display()
 
+    
     def get_full_remote_path(self) -> Union[str, None]:
+        """
+        Safely constructs the full remote path for FTP uploads, preventing path traversal.
+        This version uses posixpath to correctly handle URL-like paths regardless of the host OS.
+        """
         if not self.active_issuer_data: return None
         try:
+            # Get the configured root directory for FTP.
             ftp_root = self.config.ftp_path.strip()
-            image_base_url_path = urlparse(self.active_issuer_data.get("imageBaseUrl", "")).path
-
             if not ftp_root:
                 show_error("Configuration Error", "FTP Web Root Path is not set in Settings.")
                 return None
-            full_path = Path(ftp_root) / image_base_url_path.lstrip('/\\')
-            return full_path.as_posix()
+
+            # Get the path component from the Image Base URL.
+            image_base_url_path = urlparse(self.active_issuer_data.get("imageBaseUrl", "")).path
+
+            # Safely join the paths using posixpath, which always uses forward slashes.
+            # lstrip removes any leading slashes from the second part to ensure a clean join.
+            full_path = posixpath.join(ftp_root, image_base_url_path.lstrip('/\\'))
+
+            # Normalize the path to resolve components like '..' (e.g., /a/b/../c -> /a/c)
+            # This is crucial for the security check.
+            normalized_path = posixpath.normpath(full_path)
+            normalized_root = posixpath.normpath(ftp_root)
+
+            # Security Check: Ensure the final, normalized path is still inside the intended root directory.
+            # This prevents traversal attacks (e.g., `../../etc/passwd`).
+            if not normalized_path.startswith(normalized_root):
+                err_msg = "Path traversal detected: The Image Base URL attempts to go outside the FTP Web Root."
+                logging.error(err_msg)
+                show_error("Security Error", err_msg)
+                return None
+            
+            # Return the safe, clean, POSIX-style path for the FTP server.
+            return normalized_path
+
         except Exception as e:
             logging.error(f"Error calculating full remote path: {e}", exc_info=True)
             show_error("Configuration Error", "The Image Base URL or FTP Path is invalid.")
             return None
+    
 
     def _upload_single_file(self, local_path: Path):
         remote_dir = self.get_full_remote_path()
-        if not remote_dir: return False, "Could not determine FTP remote path. Check settings."
+        if not remote_dir:
+            return False, "Could not determine FTP remote path. Check settings and error logs."
+            
+        ftp_settings = self._get_active_ftp_settings()
+        if not ftp_settings:
+            return False, "Could not get FTP settings."
+
+        result = self.ftp_manager.upload_file(local_path, remote_dir, local_path.name, ftp_settings)
+        
+        is_success = "successful" in result.lower()
+        if self.config.enable_audit_trail and self.license_manager.is_feature_enabled("audit"):
+            event_type = "UPLOAD_SUCCESS" if is_success else "UPLOAD_FAILURE"
+            self.crypto_manager.log_event(self.active_issuer_id, self.active_issuer_data["priv_key_pem"], event_type, {"filename": local_path.name, "result_message": result})
+        
+        return is_success, result
 
     def _get_active_ftp_settings(self) -> Union[dict, None]:
         if not self.active_issuer_id: return None
@@ -1617,12 +1862,11 @@ class IssuerApp:
                     self.root.after(0, lambda: self.qr_print_button.config(state=NORMAL))
                     self.root.after(0, lambda: self.qr_email_button.config(state=NORMAL))
                     
-                    # Unlink temporary file (ensure it's the right path)
+                    # Securely delete the temporary upload file
                     if self.prepared_upload_path and self.prepared_upload_path.exists():
-                        try:
-                            self.prepared_upload_path.unlink()
-                        except OSError as e:
-                            logging.warning(f"Could not remove temporary file {self.prepared_upload_path.name}: {e}")
+                        self.prepared_upload_path.unlink() # Use standard, fast deletion
+                        logging.info(f"Deleted temporary upload file: {self.prepared_upload_path.name}")
+                        
             except Exception as e:
                 logging.error(f"Error in manual upload worker: {e}", exc_info=True)
                 self.root.after(0, lambda err=e: show_error("Upload Error", f"An unexpected error occurred during manual upload: {err}"))
@@ -2053,87 +2297,105 @@ class IssuerApp:
         ttk.Button(btn_frame, text="🗑️ Delete ID-entity", command=self.delete_identity, bootstyle=DANGER).grid(row=0, column=3, sticky="ew", padx=(2, 0))
 
     def create_signer_tab(self, parent_frame):
-        self.encoder_frame = ttk.LabelFrame(parent_frame, text="🖊️ Sign a New Certificate", padding="10")
+        # --- Main container ---
+        main_container = ttk.Frame(parent_frame)
+        main_container.pack(fill="both", expand=True)
+        
+        # --- Main Encoder Frame ---
+        self.encoder_frame = ttk.LabelFrame(main_container, text="🖊️ Sign a New Document", padding="10")
         self.encoder_frame.pack(fill="both", expand=True)
         self.encoder_frame.grid_columnconfigure((0, 1), weight=1, uniform="signer_columns")
-        self.encoder_frame.grid_rowconfigure(2, weight=1)
+        self.encoder_frame.grid_rowconfigure(3, weight=1) # Set row 3 (display area) to expand
+
+        # --- Top Section: Image Select and Summary ---
         input_area_frame = ttk.Frame(self.encoder_frame)
-        input_area_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
+        input_area_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         input_area_frame.grid_columnconfigure(1, weight=1)
+        
+        # Left side - Browse button
+        self.browse_button = ttk.Button(input_area_frame, text="📄 Select Image...", command=self.browse_and_set_image_file, bootstyle="primary-outline")
+        self.browse_button.grid(row=0, column=0, sticky="ns", padx=(0, 10))
+        
+        # Summary frame with inline document number option
         summary_frame = ttk.Frame(input_area_frame)
         summary_frame.grid(row=0, column=1, sticky="nsew")
         summary_frame.grid_columnconfigure(0, weight=1)
         summary_frame.grid_rowconfigure(1, weight=1)
-        ttk.Label(summary_frame, text="Certificate Summary:").grid(row=0, column=0, sticky="w")
-        self.message_text = ttk.Text(summary_frame, height=3, wrap="word")
+        
+        # Header with summary label and doc number controls
+        header_frame = ttk.Frame(summary_frame)
+        header_frame.grid(row=0, column=0, sticky="ew")
+        header_frame.grid_columnconfigure(0, weight=1)
+        
+        ttk.Label(header_frame, text="Document Summary / Message:").grid(row=0, column=0, sticky="w")
+ 
+        # Document number controls frame (appears on same line when toggled)
+        self.doc_num_frame = ttk.Frame(header_frame)
+        self.doc_num_frame.grid(row=0, column=1, sticky="e", padx=(10, 5))
+        
+        # Entry for the number preview/manual entry
+        self.doc_num_entry = ttk.Entry(self.doc_num_frame, textvariable=self.doc_num_var, width=20, font=("TkDefaultFont", 9))
+        self.doc_num_entry.grid(row=0, column=0, padx=(0, 5))
+        self.doc_num_var.trace_add("write", self._validate_doc_num_len)
+        
+        # The single "Auto" checkbox that is now mask-aware
+        self.auto_gen_check = ttk.Checkbutton(self.doc_num_frame, text="Auto", variable=self.auto_gen_doc_num_var, 
+                                              command=self._on_auto_toggle)
+        self.auto_gen_check.grid(row=0, column=1, padx=(0, 10))
+
+        # Toggle button to show/hide the whole frame
+        ttk.Checkbutton(header_frame, text="+ Doc #", 
+                    variable=self.include_doc_num_var, 
+                    bootstyle="round-toggle",
+                    command=self._toggle_doc_num_frame_visibility).grid(row=0, column=2, sticky="e")
+        
+        self.doc_num_frame.grid_remove()  # Initially hidden
+      
+        # Text area
+        self.message_text = ttk.Text(summary_frame, height=4, wrap="word")
         self.message_text.grid(row=1, column=0, sticky="nsew")
-        self.browse_button = ttk.Button(input_area_frame, text="📄 Select Image...", command=self.browse_and_set_image_file, bootstyle="primary-outline")
-        self.browse_button.grid(row=0, column=0, sticky="ns", padx=(0, 10))
+        
+        # Status line frame
         status_line_frame = ttk.Frame(input_area_frame)
         status_line_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         self.char_count_label = ttk.Label(status_line_frame, text=f"0 / {MAX_SUMMARY_CHARS}", bootstyle="secondary")
         self.char_count_label.pack(side="right")
-        self.doc_id_helper_label = ttk.Label(status_line_frame, text="No Image selected for fingerprinting.", bootstyle="secondary", anchor="w")
+        self.doc_id_helper_label = ttk.Label(status_line_frame, text="No Image selected.", bootstyle="secondary", anchor="w")
         self.doc_id_helper_label.pack(side="left", fill="x", expand=True)
         self.message_text.bind("<KeyRelease>", self._validate_summary_length)
-        self._validate_summary_length()
+
+        # --- Main Action Buttons ---
         self.generate_qr_button = ttk.Button(self.encoder_frame, text="✨ Fingerprint, Sign & Save", command=self.generate_document_qr, bootstyle=PRIMARY, state="disabled")
-        self.generate_qr_button.grid(row=1, column=0, sticky="ew", ipady=5, padx=(0, 5), pady=10)
+        self.generate_qr_button.grid(row=2, column=0, sticky="ew", ipady=5, padx=(0, 5), pady=10)
         self.upload_button = ttk.Button(self.encoder_frame, text="🚀 Upload LKey", command=self.upload_lkey_file_threaded, state="disabled")
-        self.upload_button.grid(row=1, column=1, sticky="ew", ipady=5, padx=(5, 0), pady=10)
-        lkey_lf = ttk.LabelFrame(self.encoder_frame, text="Generated LKey Image")
-        lkey_lf.grid(row=2, column=0, sticky="nsew", padx=(0, 5))
+        self.upload_button.grid(row=2, column=1, sticky="ew", ipady=5, padx=(5, 0), pady=10)
+        
+        # --- Display Frames ---
+        lkey_lf = ttk.LabelFrame(self.encoder_frame, text="Fingerprinted Legato Key Image")
+        lkey_lf.grid(row=3, column=0, sticky="nsew", padx=(0, 5), pady=(10,0))
         lkey_lf.grid_columnconfigure(0, weight=1)
         lkey_lf.grid_rowconfigure(1, weight=1)
         top_status_bar_frame = ttk.Frame(lkey_lf)
         top_status_bar_frame.grid(row=0, column=0, sticky="ew", padx=5)
-        top_status_bar_frame.grid_columnconfigure(0, weight=1) 
-        top_status_bar_frame.grid_columnconfigure(1, weight=1) 
-
+        top_status_bar_frame.grid_columnconfigure(0, weight=1)
+        top_status_bar_frame.grid_columnconfigure(1, weight=1)
         self.auto_upload_indicator_label = ttk.Label(top_status_bar_frame, text="", bootstyle="success")
-        self.auto_upload_indicator_label.grid(row=0, column=0, sticky="w", padx=(0, 5)) 
-
+        self.auto_upload_indicator_label.grid(row=0, column=0, sticky="w", padx=(0, 5))
         self.upload_progress_bar = ttk.Progressbar(top_status_bar_frame, mode="indeterminate", length=150)
         self.upload_progress_bar.grid(row=0, column=1, sticky="ew")
-
-        self.upload_progress_bar.grid_remove() 
+        self.upload_progress_bar.grid_remove()
         self.lkey_image_display_label = ttk.Label(lkey_lf, relief="flat", anchor="center")
         self.lkey_image_display_label.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
-
-        self.lkey_folder_button = ttk.Button(
-            lkey_lf,
-            text="📁",
-            command=self._open_lkey_save_location,
-            bootstyle="secondary-outline",
-            width=3
-        )
-        qr_lf = ttk.LabelFrame(self.encoder_frame, text="Generated LegatoKey")
-        qr_lf.grid(row=2, column=1, sticky="nsew", padx=(5, 0))
+        self.lkey_folder_button = ttk.Button(lkey_lf, text="📁", command=self._open_lkey_save_location, bootstyle="secondary-outline", width=3)
+        
+        qr_lf = ttk.LabelFrame(self.encoder_frame, text="Generated LegatoKey QR")
+        qr_lf.grid(row=3, column=1, sticky="nsew", padx=(5, 0), pady=(10,0))
         self.qr_display_label = ttk.Label(qr_lf, relief="flat", anchor="center")
         self.qr_display_label.pack(fill="both", expand=True, padx=5, pady=5)
-                # These buttons are not packed or gridded; they will be placed on demand.
-        self.qr_print_button = ttk.Button(
-            qr_lf,
-            text="🖨️",
-            command=self.print_document_qr,
-            bootstyle="secondary-outline",
-            width=3
-        )
-        self.qr_email_button = ttk.Button(
-            qr_lf,
-            text="✉️",
-            command=self.email_document_qr,
-            bootstyle="secondary-outline",
-            width=3
-        )
-        self.qr_folder_button = ttk.Button(
-            qr_lf,
-            text="📁",
-            command=self._open_qr_save_location,
-            bootstyle="secondary-outline",
-            width=3
-        )
-
+        self.qr_print_button = ttk.Button(qr_lf, text="🖨️", command=self.print_document_qr, bootstyle="secondary-outline", width=3)
+        self.qr_email_button = ttk.Button(qr_lf, text="✉️", command=self.email_document_qr, bootstyle="secondary-outline", width=3)
+        self.qr_folder_button = ttk.Button(qr_lf, text="📁", command=self._open_qr_save_location, bootstyle="secondary-outline", width=3)
+        
     def create_batch_signing_tab(self, parent_frame):
         parent_frame.grid_rowconfigure(1, weight=1)
         parent_frame.grid_columnconfigure(0, weight=1)
@@ -2253,10 +2515,38 @@ class IssuerApp:
         self.enable_audit_trail_checkbox.pack(anchor="w", fill="x", pady=(5, 5))
         ttk.Label(audit_frame, text="Creates a cryptographically signed log of all signing and upload events.", wraplength=400, bootstyle="secondary").pack(anchor="w")
         if not is_audit_licensed:
-            ttk.Label(audit_frame, text="Purchase a Pro license to enable this.", bootstyle="info").pack(anchor="w", pady=(5, 0))
-        
-        
+            ttk.Label(audit_frame, text="Purchase a Pro license to enable this.", bootstyle="info").pack(anchor="w", pady=(5, 0))      
         self._update_ftp_dependent_widgets_state()
+            
+    # --- NEW FRAME FOR DOCUMENT NUMBER SETTINGS ---
+        doc_num_settings_frame = ttk.LabelFrame(right_container, text="💎 Document Number Mask (Pro Feature)", padding=15)
+        doc_num_settings_frame.pack(fill="x", expand=False, pady=(10, 0))
+
+        is_masking_licensed = self.license_manager.is_feature_enabled("masked_ids")
+
+        ttk.Label(doc_num_settings_frame, text="Define a mask for the 'Auto' number generator:").pack(anchor="w")
+        
+        # This entry correctly links to mask_string_var. There are NO save bindings.
+        mask_entry_settings = ttk.Entry(doc_num_settings_frame, textvariable=self.mask_string_var)
+        mask_entry_settings.pack(fill="x", pady=(5, 2))
+
+        self.mask_sample_label = ttk.Label(doc_num_settings_frame, text="Sample: ...", bootstyle="secondary")
+        self.mask_sample_label.pack(anchor="w")
+
+        ttk.Label(doc_num_settings_frame, text="Placeholders: YYYY, YY, MM, DD, #### (number)", bootstyle="info", font="-size 8").pack(anchor="w", pady=(5,0))
+        
+        # This trace ONLY updates the UI sample, it does NOT save anything. This is safe.
+        self.mask_string_var.trace_add("write", self._update_mask_sample_label)
+        self._update_mask_sample_label() # Set initial sample text
+
+        # Handle the license check
+        if not is_masking_licensed:
+            mask_entry_settings.config(state=DISABLED)
+            self.mask_string_var.set("") # Clear the var to prevent use
+            self.mask_sample_label.config(text="Sample: Pro license required")
+            
+          
+  
 
     def create_guide_tab(self, parent_frame):
         import textwrap
@@ -2575,4 +2865,3 @@ if __name__ == "__main__":
     root.mainloop()
 
     logging.info("================ Application Closed ================\n")
-
