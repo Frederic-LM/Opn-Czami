@@ -1,10 +1,10 @@
+# settings_manager.py
+
 import json
 import logging
 from pathlib import Path
 from typing import Union
-
-# Import from our new utils file
-from models.utils import show_error
+from utils import show_error
 
 class SettingsManager:
     """Handles loading and saving of the main application settings file."""
