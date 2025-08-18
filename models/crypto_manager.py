@@ -1,3 +1,5 @@
+# crypto_manager.py
+
 import base64
 import base58
 import cbor2
@@ -8,21 +10,22 @@ import keyring
 import logging
 import os
 import struct
+import zlib
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Union
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
 
-# Import from our new utils file
-from models.utils import show_error, KeyStorage
+from config import KEY_CHUNK_SIZE, AUDIT_LOG_FILENAME_TEMPLATE
+from utils import show_error
 
-# Constants moved from the main file
-KEY_CHUNK_SIZE = 1000
-AUDIT_LOG_FILENAME_TEMPLATE = "Audit-Trail-{issuer_id}.log"
-
+class KeyStorage(Enum):
+    """Enumeration for where a private key is stored."""
+    KEYSTORE = "STORED_IN_KEYSTORE"
+    FILE = "STORED_IN_FILE"
 
 class CryptoManager:
     """Manages all cryptographic operations and secure storage."""
@@ -147,6 +150,7 @@ class CryptoManager:
         """
         hasher = hashlib.sha256()
         try:
+            # Check if the input is a file path object from the 'pathlib' library
             if isinstance(filepath_or_buffer, Path):
                 if not filepath_or_buffer.exists(): 
                     logging.error(f"Hash calculation failed: Path does not exist at '{filepath_or_buffer}'")
@@ -154,15 +158,21 @@ class CryptoManager:
                 with filepath_or_buffer.open("rb") as f:
                     while chunk := f.read(4096):
                         hasher.update(chunk)
+            
+            # Check if the input is an in-memory, file-like object (like io.BytesIO)
             elif hasattr(filepath_or_buffer, 'read'):
-                filepath_or_buffer.seek(0)
+                filepath_or_buffer.seek(0) # IMPORTANT: Rewind the buffer to the beginning
                 while chunk := filepath_or_buffer.read(4096):
                     hasher.update(chunk)
-                filepath_or_buffer.seek(0)
+                filepath_or_buffer.seek(0) # Rewind again for good measure in case it's reused
+            
+            # If it's neither, we can't process it
             else:
                 show_error("Hash Error", f"Invalid input type for hash calculation: {type(filepath_or_buffer)}")
                 return None
+                
             return hasher.hexdigest()[:32]
+            
         except Exception as e:
             show_error("File Hash Error", f"An error occurred during hash calculation: {e}")
             logging.error(f"Error in calculate_file_hash: {e}", exc_info=True)
@@ -185,6 +195,7 @@ class CryptoManager:
             signature = base64.urlsafe_b64decode(signature_b64)
             pub_key.verify(signature, payload_json)
             return True
+        
         except (InvalidSignature, ValueError, Exception):
             return False
 
@@ -207,9 +218,11 @@ class CryptoManager:
                 except OSError: 
                     f.seek(0)
                 last_line = f.readline().decode("utf-8").strip()
+
             if "::" not in last_line:
                 logging.warning(f"Audit log '{log_path.name}' malformed. Last line invalid.")
                 return None
+            
             json_part, _ = last_line.split("::", 1)
             return hashlib.sha256(json_part.encode("utf-8")).hexdigest()
         except Exception as e:
@@ -224,6 +237,7 @@ class CryptoManager:
         try:
             log_path = self.get_audit_log_path(issuer_id)
             previous_hash = self.get_last_log_hash(log_path)
+
             log_entry = {
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "issuer_id": issuer_id,
@@ -231,11 +245,15 @@ class CryptoManager:
                 "details": details,
                 "previous_hash": previous_hash,
             }
+
             signature_b64 = self.sign_payload(private_key_pem, log_entry)
             log_line = f"{json.dumps(log_entry, separators=(',', ':'))}::{signature_b64}\n"
+
             with log_path.open("a", encoding="utf-8") as f:
                 f.write(log_line)
+            
             logging.info(f"Logged event '{event_type}' to audit trail.")
+
             try:
                 head_hash_path = log_path.with_suffix(".head")
                 entry_json = json.dumps(log_entry, separators=(",", ":")).encode("utf-8")
@@ -246,6 +264,7 @@ class CryptoManager:
                     "Audit Log Critical Failure",
                     f"Could not update audit trail's head file. Log may be inconsistent. Error: {e}",
                 )
+
         except Exception as e:
             show_error(
                 "Audit Log Failure",
