@@ -11,7 +11,7 @@ from cryptography.exceptions import InvalidSignature
 from typing import Union
 
 # Import the utility function instead of redefining it
-from utils import get_app_data_path
+from .utils import get_app_data_path
 
 class LicenseManager:
     """Manages verification of the pro license key."""
