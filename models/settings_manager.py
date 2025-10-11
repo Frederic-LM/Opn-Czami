@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Union
-from utils import show_error
+from .utils import show_error
 
 class SettingsManager:
     """Handles loading and saving of the main application settings file."""
