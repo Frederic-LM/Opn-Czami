@@ -2,10 +2,10 @@
 
 import sys
 from pathlib import Path
-from utils import get_app_data_path
+from .utils import get_app_data_path
 
 # --- Application Constants ---
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 APP_NAME = "OpnCzami"
 KEYRING_SERVICE_NAME = "OperatorIssuerApp"
 KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
