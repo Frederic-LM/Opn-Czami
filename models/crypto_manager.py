@@ -19,8 +19,8 @@ from typing import Union
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 
-from .config import KEY_CHUNK_SIZE, AUDIT_LOG_FILENAME_TEMPLATE
-from .utils import show_error
+from models.config import KEY_CHUNK_SIZE, AUDIT_LOG_FILENAME_TEMPLATE
+from models.utils import show_error
 
 class KeyStorage(Enum):
     """Enumeration for where a private key is stored."""
