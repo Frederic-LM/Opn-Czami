@@ -1,4 +1,3 @@
-# Op'n-Czami
 # Copyright (C) 2025 Frédéric Levi Mazloum
 #
 # This program is free software; you can redistribute it and/or modify
@@ -15,10 +14,11 @@
 # along with this program.  If not, see
 # <https://www.gnu.org/licenses/>.
 # 
-
+# v2.0.3
 # --- Standard Library Imports ---
 import base64
 import base45
+import base58 
 import cbor2
 import datetime
 import io
@@ -70,12 +70,12 @@ except ImportError:
     PANDAS_AVAILABLE = False
 
 # --- Local Application Imports ---
-from config import *
-from utils import resource_path, show_error, show_info
-from settings_manager import SettingsManager
-from ftp_manager import FTPManager
-from crypto_manager import CryptoManager, KeyStorage
-from license_manager import LicenseManager
+from models.config import *
+from models.utils import resource_path, show_error, show_info
+from models.settings_manager import SettingsManager
+from models.ftp_manager import FTPManager
+from models.crypto_manager import CryptoManager, KeyStorage
+from models.license_manager import LicenseManager
 
 # --- Pro Features Handling ---
 try:
@@ -244,11 +244,11 @@ class ImageProcessor:
         
         return qr_img.convert("RGB")
 
-
 class IssuerApp:
    
     def __init__(self, root: ttk.Window):
         self.root = root
+        self._after_id = None 
         self._configure_root_window()
         self._init_managers_and_config()
         self._init_state_variables()
@@ -263,6 +263,13 @@ class IssuerApp:
         self.root.minsize(1260, 980)
         self.root.resizable(False, True)
         self._set_window_icon()
+
+    # Add this new method to your IssuerApp class
+    def _on_configure_debounced(self, event=None):
+        # Cancel any previously scheduled job
+        if self._after_id:
+            self.root.after_cancel(self._after_id)
+        self._after_id = self.root.after(200, self._apply_dpi_scaling)
 
     def _init_managers_and_config(self):
         """Initializes all manager classes and the application configuration."""
@@ -285,6 +292,7 @@ class IssuerApp:
         self.system_is_verified = False
         self.is_generating = False
         self.selected_image_file_path = None
+        self.last_auto_inc_num = 0 
         self.prepared_upload_path = None
         self.last_signed_payload = None
         self.upload_button_state = UploadButtonState.INITIAL
@@ -294,6 +302,15 @@ class IssuerApp:
         self.lkey_image_tk = None
         self.original_status_logo_pil = None
         self.logo_path = None
+    # --- START of missing variables to add ---
+        self.item_type_var = ttk.StringVar()
+        self.primary_item_type_var = ttk.StringVar()
+        self.custom_item_type_var = ttk.StringVar()
+        self.bow_modifier_var = ttk.BooleanVar(value=False)
+        self.selected_item_label_var = ttk.StringVar()
+    # --- END of missing variables to add ---        
+        
+        
         # --- Variables for Enhanced Signing ---
         self.include_doc_num_var = ttk.BooleanVar(value=False)
         self.auto_gen_doc_num_var = ttk.BooleanVar(value=False)
@@ -337,8 +354,9 @@ class IssuerApp:
     def _bind_events(self):
         """Binds all application-level events."""
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.bind("<Configure>", self._apply_dpi_scaling)
-
+        #self.root.bind("<Configure>", self._apply_dpi_scaling)
+        self.root.bind("<Configure>", self._on_configure_debounced) # ADD THIS
+        
         ftp_vars_to_trace = [self.ftp_host_var, self.ftp_user_var, self.ftp_pass_var, self.ftp_path_var]
         for var in ftp_vars_to_trace:
             var.trace_add("write", self.on_ftp_settings_change)
@@ -430,36 +448,7 @@ class IssuerApp:
         """When the user clicks into the custom item box, deselect radio buttons."""
         self.primary_item_type_var.set("") # Deselects all radio buttons
         self._on_item_selection_change()
-
-    def _on_item_selection_change(self, *args):
-        """Updates the item selection based on the primary instrument and bow modifier."""
-        primary_selection = self.primary_item_type_var.get()
-        is_bow = self.bow_modifier_var.get()
-        
-        # When a primary instrument is selected, the bow is always an option
-        self.bow_toggle_button.config(state="normal")
-        
-        final_code = ""
-        description = ""
-
-        if primary_selection == "01": # Violin
-            final_code = "05" if is_bow else "01"
-            description = "Violin bow" if is_bow else "Violin"
-        elif primary_selection == "02": # Viola
-            final_code = "06" if is_bow else "02"
-            description = "Viola bow" if is_bow else "Viola"
-        elif primary_selection == "03": # Cello
-            final_code = "04" if is_bow else "03"
-            description = "Cello bow" if is_bow else "Cello"
-        elif primary_selection == "07": # Custom Text
-            final_code = "07" # Always use the "custom" code
-            custom_text = self.custom_item_type_var.get().strip() or "[Custom Item]"
-            description = f"{custom_text} bow" if is_bow else custom_text
-        
-        self.item_type_var.set(final_code)
-        self.selected_item_label_var.set(f"Selected: {description}")
-        self._update_bow_button_style()
-    
+       
     def _show_upgrade_prompt(self, feature_name: str):
         """Displays a standard dialog for Pro-only features."""
         show_info("Professional Feature", f"'{feature_name}' is a Professional feature.\n\nPlease purchase a license to unlock this functionality.")
@@ -1133,24 +1122,22 @@ class IssuerApp:
                 self.issuer_qr_display_label.config(image="")
             self.issuer_qr_image_pil = None
             return
-        
+
         payload = {
             "qr_type": "issuer_info_v1",
             "id": self.active_issuer_id,
-            "issuername": self.active_issuer_data["name"],   
+            "name": self.active_issuer_data["name"],   
             "infoUrl": self.active_issuer_data["infoUrl"]
              }
-            
+
         json_string = json.dumps(payload, separators=(',', ':'))
-        compressed_data = zlib.compress(json_string.encode('utf-8'), level=9)
-        qr_data = base45.b45encode(compressed_data).decode('ascii')
-    
+
         self.issuer_qr_image_pil = self.image_processor.generate_qr_with_logo(
-            qr_data,
+            json_string,
             self.original_status_logo_pil,
             sizing_ratio=0.85
         )
-    
+
         display_img = self.issuer_qr_image_pil.copy()
         display_img.thumbnail((250, 250), self.image_processor.resample_method)
         img_tk = ImageTk.PhotoImage(display_img)
