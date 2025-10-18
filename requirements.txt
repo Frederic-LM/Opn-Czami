@@ -1,0 +1,28 @@
+# GUI Framework
+ttkbootstrap==1.10.1
+tkinterdnd2==0.3.0
+
+# Core Logic & Security
+cryptography==42.0.7
+requests==2.31.0
+Pillow==10.3.0
+pyzipper==0.3.6
+keyring==25.2.1
+
+# QR Code Generation
+qrcode==7.4.2
+base45==0.0.5
+cbor2==5.6.2
+base58==2.1.1
+
+# Pro Features (Batch Processing)
+pandas==2.2.2
+openpyxl==3.1.2
+
+# Windows-specific dependency for keyring
+pypiwin32==223; sys_platform == 'win32'
+
+boto3
+
+requests==2.31.0
+packaging==24.0
