@@ -352,6 +352,8 @@ class OpnCzamiApp:
             self.tabs["settings"].update_ui_state(has_identity)
         if "pro" in self.tabs:
             self.tabs["pro"].update_ui_state(has_identity)
+        if "info" in self.tabs:
+            self.tabs["info"].update_ui_state(has_identity)    
         
         # --- AUDIT LOG REFRESH LOGIC ---
         # Only refresh the audit log if:
