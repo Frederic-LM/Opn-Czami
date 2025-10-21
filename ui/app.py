@@ -34,7 +34,7 @@ from tkinter import font, messagebox
 from opn_czami_logic import OpnCzamiLogic
 
 # Models (for constants and utilities)
-from models.config import APP_DATA_DIR, APP_VERSION
+from models.config import APP_DATA_DIR, FEATURE_WEB3 
 from models.utils import resource_path, show_error, show_info
 
 # UI Components
@@ -468,7 +468,7 @@ class OpnCzamiApp:
     
     def check_and_display_web3_status(self):
         ipfs_cid = self.logic.active_issuer_data.get("ipfsCid")
-        is_web3_licensed = self.logic.license_manager.is_feature_enabled("web3")
+        is_web3_licensed = self.logic.license_manager.is_feature_enabled(FEATURE_WEB3)
 
         if ipfs_cid and is_web3_licensed:
             self.web3_status_label.config(text=f"| Web3 Anchor: ipfs://{ipfs_cid} (Verifying...)", bootstyle="warning", cursor="")
