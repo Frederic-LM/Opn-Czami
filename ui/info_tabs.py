@@ -267,13 +267,14 @@ This summary will be securely encrypted and embedded in the LegatoKey and cannot
     # ---  Button Click ---
     def update_ui_state(self, has_identity: bool):
         """
-        Updates the state of the interactive widgets on this tab based on
-        whether an identity is loaded.
+        FIX never avalable by Updating based on
+        the application's state (identity loaded, license active).
         """
-     # Check if the upgrade_button has been created yet
+
         if hasattr(self, 'upgrade_button'):
-            # Set the button state based on whether an identity is loaded
-            new_state = NORMAL if has_identity else DISABLED
+            is_licensed = self.logic.license_manager.is_licensed
+            should_be_active = has_identity and not is_licensed
+            new_state = NORMAL if should_be_active else DISABLED
             self.upgrade_button.config(state=new_state)
 
 
