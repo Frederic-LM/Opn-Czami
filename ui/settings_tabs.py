@@ -628,7 +628,7 @@ class SettingsTabs:
     def update_ui_state(self, has_identity: bool):
         """
         Updates UI widgets to reflect current application state.
-        Preserves behavior and widget states as in the original implementation.
+
         """
         if has_identity:
             saved_mode = self.logic.active_issuer_data.get("settings", {}).get("anchor_source", "managed")
@@ -642,7 +642,7 @@ class SettingsTabs:
             self.managed_controls_frame.pack_forget()
             self.custom_controls_frame.pack_forget()
         except Exception:
-            pass  # defensive
+            pass 
 
         is_licensed_pro = self.logic.license_manager.is_licensed
         has_web3_feature = self.logic.license_manager.is_feature_enabled(FEATURE_WEB3)
@@ -701,12 +701,6 @@ class SettingsTabs:
 
         self.toggle_watermark_state()
         self._update_ftp_dependent_widgets_state()
-
-    def _update_ftp_dependent_widgets_state(self, *args):
-        is_valid = all([self.ftp_host_entry.get(), self.ftp_user_entry.get(), self.ftp_pass_entry.get(), self.ftp_path_entry.get()])
-        self.auto_upload_check.config(state=NORMAL if is_valid else DISABLED)
-        if not is_valid:
-            self.ftp_auto_upload_var.set(False)
 
     def handle_auto_upload_toggle(self):
         self._save_settings()
