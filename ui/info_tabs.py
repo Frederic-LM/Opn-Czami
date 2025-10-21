@@ -308,7 +308,7 @@ class PurchaseProgressUI:
         # Center the window
         self.top.update_idletasks()
         width = 500 
-        height = 250 
+        height = 300 
         x = (self.top.winfo_screenwidth() // 2) - (width // 2)
         y = (self.top.winfo_screenheight() // 2) - (height // 2)
         self.top.geometry(f'{width}x{height}+{x}+{y}')
