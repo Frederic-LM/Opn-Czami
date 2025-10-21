@@ -43,7 +43,7 @@ from models.utils import resource_path
 # --- GUI import ---
 from ui.app import OpnCzamiApp
 
-# --- Application & Update Constants ---
+# --- Application Update Constants ---
 GITHUB_USER = "Frederic-LM"
 GITHUB_REPO = "Opn-Czami"
 
@@ -64,10 +64,10 @@ def _configure_logging():
     logging.info("--- Application Logging Started ---")
 
 
-# --- NEW: Update Check Logic ---
+# --- Update Check Logic (non tested yet)---
 
 def _show_update_notification(new_version_str: str, download_url: str):
-    """Displays a message box to the user about the new version."""
+    """Displays a message box about the new version."""
     if messagebox.askyesno(
         "Update Available",
         f"A new version ({new_version_str}) of Op'n-Czami is available!\n\n"
@@ -84,7 +84,7 @@ def _update_check_worker(root: ttk.Window):
     try:
         api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/releases/latest"
         response = requests.get(api_url, timeout=10)
-        response.raise_for_status()  # Will raise an exception for HTTP errors
+        response.raise_for_status()  
 
         data = response.json()
         remote_version_str = data.get("tag_name", "").lstrip('v')
@@ -117,7 +117,7 @@ if __name__ == "__main__":
 
 
     if sys.platform == "win32":
-        # --- Win32 Constants ---
+        # --- Win32 specific Constants ---
         WIN_APP_ID = "com.mazloumlevif.opnczami.legato"
         WM_SETICON = 0x0080
         ICON_BIG = 1
@@ -126,7 +126,6 @@ if __name__ == "__main__":
         try:
             import ctypes
             from ctypes import windll  
-
             # Set DPI awareness
             try:
                 windll.shcore.SetProcessDpiAwareness(2)
@@ -145,8 +144,12 @@ if __name__ == "__main__":
 
     app = OpnCzamiApp(root)
 
-    # --- NEW: Trigger the update check after the app is initialized ---
+    # --- Trigger the update check after the app is initialized ---
     check_for_updates_threaded(root)
+    # Trigger the Pro license check (only if pro features are available).
+    # This now contains the logic to only call home if the local key is expired.
+    if hasattr(app.logic.pro_handler, 'check_and_renew_license_on_startup'):
+        app.logic.pro_handler.check_and_renew_license_on_startup()
 
     if sys.platform == "win32":
         try:
