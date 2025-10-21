@@ -32,7 +32,7 @@ from ttkbootstrap.constants import *
 # --- Local Imports ---
 from opn_czami_logic import OpnCzamiLogic
 from models.utils import show_error, show_info
-from models.config import FEATURE_WATERMARK, FEATURE_AUDIT, FEATURE_MASKED_IDS
+from models.config import FEATURE_WATERMARK, FEATURE_AUDIT, FEATURE_MASKED_IDS, FEATURE_WEB3
 
 try:
     import pyzipper
@@ -645,7 +645,7 @@ class SettingsTabs:
             pass  # defensive
 
         is_licensed_pro = self.logic.license_manager.is_licensed
-        has_web3_feature = self.logic.license_manager.is_feature_enabled("web3")
+        has_web3_feature = self.logic.license_manager.is_feature_enabled(FEATURE_WEB3)
         is_already_anchored = self.logic.active_issuer_data.get("ipfsCid") is not None
 
         selected_mode = self.anchor_mode_var.get()
