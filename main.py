@@ -67,7 +67,7 @@ def _configure_logging():
 # --- Update Check Logic (non tested yet)---
 
 def _show_update_notification(new_version_str: str, download_url: str):
-    """Displays a message box about the new version."""
+    """Displays a message box to the user about the new version."""
     if messagebox.askyesno(
         "Update Available",
         f"A new version ({new_version_str}) of Op'n-Czami is available!\n\n"
