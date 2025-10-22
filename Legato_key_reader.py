@@ -20,8 +20,8 @@
 # and integrity of a digital document without needing a central authority. It
 # achieves this through a decentralized, public-key cryptography workflow.
 #
-
-
+#V3.0.1 bug fixed 
+#
 import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
@@ -29,7 +29,7 @@ from ttkbootstrap.scrolled import ScrolledText
 from tkinter import filedialog, messagebox
 import json, base64, io, re, requests, os, threading, textwrap, hashlib, zlib, cbor2, base45
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.exceptions import InvalidSignature
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from pyzbar import pyzbar
 
@@ -38,7 +38,7 @@ ISSUER_DB_FILE = "legatokeyreader.json"
 class VerifierApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Czami - Secure Verifier Tool v5 (Fixed)")
+        self.root.title("Czami - Secure Verifier Tool")
         self.root.geometry("800x1100")
 
         self.issuers = {}
@@ -51,15 +51,12 @@ class VerifierApp:
         self.notebook.pack(pady=10, padx=10, expand=True, fill="both")
         
         self.verifier_frame = ttk.Frame(self.notebook, padding=10)
-        self.debug_frame = ttk.Frame(self.notebook, padding=10)
         self.issuer_frame = ttk.Frame(self.notebook, padding=10)
         
         self.notebook.add(self.verifier_frame, text='🔍 Verify Document')
-        self.notebook.add(self.debug_frame, text='🐞 Debug Terminal')
         self.notebook.add(self.issuer_frame, text='📚 Known Issuers')
         
         self.create_verifier_tab()
-        self.create_debug_tab()
         self.create_issuer_tab()
         
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -149,7 +146,7 @@ class VerifierApp:
             bd=0, relief='flat', bg=log_bg_color
         )
         self.log_text.pack(fill='x', expand=True)
-        self.log_text.text.config(state="disabled") # CORRECTED
+        self.log_text.text.config(state="disabled")
         self.log_text.tag_configure("success", foreground=style.colors.get("success"))
         self.log_text.tag_configure("failure", foreground=style.colors.get("danger"))
         self.log_text.tag_configure("info", foreground=style.colors.get("secondary"))
@@ -157,16 +154,6 @@ class VerifierApp:
 
         self.reset_decoder_view()
 
-    def create_debug_tab(self):
-        ttk.Label(self.debug_frame, text="Raw QR Data & Decoding Process", font="-weight bold").pack(anchor="w")
-        self.debug_text = ScrolledText(self.debug_frame, wrap="word", font=('Consolas', 10), autohide=True, padding=5)
-        self.debug_text.pack(fill="both", expand=True, pady=5)
-        self.debug_text.text.config(state="disabled") # CORRECTED
-        self.debug_text.tag_configure("label", font=('Consolas', 10, 'bold'), foreground="#0d6efd")
-        self.debug_text.tag_configure("data", foreground="#343a40")
-        self.debug_text.tag_configure("error", foreground="#dc3545")
-        self.debug_text.tag_configure("success", foreground="#198754")
-        
     def create_issuer_tab(self):
         frame = self.issuer_frame
         cols = ('ID', 'Name', 'Info URL')
@@ -182,7 +169,7 @@ class VerifierApp:
         ttk.Button(btn_frame, text="Forget Selected Issuer", command=self.delete_selected_issuer, bootstyle="outline-danger").pack(side="left", expand=True, fill='x', padx=2)
         ttk.Button(btn_frame, text="Refresh List", command=self.refresh_issuer_list, bootstyle="outline-secondary").pack(side="left", expand=True, fill='x', padx=2)
         self.refresh_issuer_list()
-        
+
     def reset_decoder_view(self):
         self.issuer_label.config(text="Issuer: N/A")
         self.logo_label.config(image=self.logo_placeholder)
@@ -194,7 +181,7 @@ class VerifierApp:
         self.doc_image_label.config(image=self.doc_image_placeholder)
         self.doc_image_label.image = self.doc_image_placeholder
         if hasattr(self, 'log_text'):
-            self.log_text.text.config(state="normal") # CORRECTED
+            self.log_text.text.config(state="normal")
             self.log_text.text.delete("1.0", "end")
             self.log_text.text.config(state="disabled")
     
@@ -202,118 +189,83 @@ class VerifierApp:
         self.root.after(0, self._log_message_thread_safe, message, style)
 
     def _log_message_thread_safe(self, message, style):
-        self.log_text.text.config(state="normal") # CORRECTED
-        self.log_text.insert("end", f"> {message}\n", style)
-        self.log_text.see("end")
-        self.log_text.text.config(state="disabled") # CORRECTED
-
-    def debug_log(self, label, data="", style="data"):
-        self.root.after(0, self._debug_log_thread_safe, label, data, style)
-
-    def _debug_log_thread_safe(self, label, data, style):
-        self.debug_text.text.config(state="normal") # CORRECTED
-        self.debug_text.insert("end", f"{label:<25}", "label")
-        self.debug_text.insert("end", f": {data}\n", style)
-        self.debug_text.see("end")
-        self.debug_text.text.config(state="disabled") # CORRECTED
+        self.log_text.text.config(state="normal")
+        self.log_text.text.insert("end", f"> {message}\n", style)
+        self.log_text.text.see("end")
+        self.log_text.text.config(state="disabled")
 
     def scan_and_process_qr(self):
         self.reset_decoder_view()
-        self.debug_text.text.config(state="normal") # CORRECTED
-        self.debug_text.delete("1.0", "end")
-        self.debug_text.text.config(state="disabled") # CORRECTED
-        self.debug_log("="*60, "="*60, "label")
-        self.debug_log("STARTING NEW SCAN", "")
 
-        path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png *.jpg")]);
-        if not path: 
-            self.debug_log("User cancelled file selection", "")
-            return
+        path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png *.jpg")])
+        if not path: return
         
         self.log_message(f"Scanning image: {os.path.basename(path)}...")
-        self.debug_log("File Path", path)
         try:
             decoded_qrs = pyzbar.decode(Image.open(path))
         except Exception as e:
             self.log_message(f"ERROR: Could not open image: {e}", "failure")
-            self.debug_log("PYZBAR ERROR", str(e), "error")
+            messagebox.showerror("Image Error", f"Could not process the image file.\n\nError: {e}")
             return
 
         if not decoded_qrs:
             self.log_message("FAILURE: No QR code found.", "failure")
-            self.debug_log("PYZBAR RESULT", "No QR codes detected in the image.", "error")
+            messagebox.showwarning("Not Found", "No QR code could be found in the image.")
             return
 
         self.log_message(f"SUCCESS: Found {len(decoded_qrs)} QR code(s).", "success")
         
         raw_bytes = decoded_qrs[0].data
-        self.debug_log("RAW BYTES", str(raw_bytes))
         
         try:
             qr_string = raw_bytes.decode('utf-8')
-            self.debug_log("DECODED (UTF-8)", qr_string)
         except UnicodeDecodeError:
-            self.debug_log("DECODING ERROR", "Could not decode raw bytes as UTF-8.", "error")
             self.log_message("ERROR: QR data is not valid UTF-8.", "failure")
             return
         
-        if qr_string.strip().startswith('{'):
-            self.log_message("Detected legacy JSON Issuer QR format...")
-            self.debug_log("QR Type Detected", "Legacy JSON Issuer")
-            try:
-                payload = json.loads(qr_string)
-                if payload.get("qr_type") == "issuer_info_v1":
-                     threading.Thread(target=self.add_issuer_from_data, args=(payload,), daemon=True).start()
-                else:
-                    raise ValueError("JSON payload is not a valid legacy Issuer QR.")
-            except Exception as e:
-                self.log_message(f"ERROR: Legacy Issuer QR is malformed: {e}", "failure")
-                self.debug_log("JSON PARSE FAILED", str(e), "error")
+        if qr_string.strip().startswith('{') or qr_string.strip().startswith('i') or qr_string.strip().startswith('n'):
+            self.log_message("Detected Issuer QR format...", "info")
+            threading.Thread(target=self.process_issuer_data_flow, args=(qr_string,), daemon=True).start()
 
         elif ':' in qr_string:
-            self.log_message("Detected new Document QR format...")
-            self.debug_log("QR Type Detected", "New Document QR")
+            self.log_message("Detected Document QR format. Starting verification...", "info")
             threading.Thread(target=self.process_verification_qr, args=(qr_string,), daemon=True).start()
 
         else:
-            self.log_message("Detected new compressed Issuer QR format...")
-            self.debug_log("QR Type Detected", "New Compressed Issuer")
-            threading.Thread(target=self.process_issuer_qr, args=(qr_string,), daemon=True).start()
+            self.log_message("ERROR: Unrecognized QR code format.", "failure")
 
     def process_verification_qr(self, qr_string):
         try:
+            # 1. Parse and normalize the Issuer ID (Critical Fix)
             issuer_id, payload_b45 = qr_string.split(':', 1)
-            self.debug_log("Step 1: Issuer ID", issuer_id)
-            self.debug_log("Step 1: Payload (B45)", payload_b45[:60] + "...")
+            issuer_id = issuer_id.strip().lower()
 
-            issuer_info = self.issuers.get(issuer_id.upper())
+            # 2. Check for trust
+            issuer_info = self.issuers.get(issuer_id)
             if not issuer_info:
-                raise ValueError(f"Issuer '{issuer_id}' is not in the trusted database.")
+                raise ValueError(f"Issuer '{issuer_id}' is not in the trusted database. Please add them first.")
             self.log_message(f"Issuer '{issuer_info['name']}' found in trusted database.", "success")
-            self.debug_log("Step 2: Trust Check", f"OK. Found '{issuer_info['name']}'.", "success")
             self.root.after(0, lambda: self.issuer_label.config(text=f"Issued by: {issuer_info.get('name', 'N/A')}"))
-            self.display_issuer_logo(issuer_id.upper())
+            self.display_issuer_logo(issuer_id)
 
+            # 3. Decode payload
             combined_bytes = base45.b45decode(payload_b45)
-            self.debug_log("Step 3: B45 Decoded", f"{len(combined_bytes)} bytes total")
-
+            
+            # 4. Split signature from the compressed data
             signature_bytes = combined_bytes[-64:]
             payload_compressed = combined_bytes[:-64]
-            self.debug_log("Step 4: Split Signature", f"{len(signature_bytes)} bytes")
-            self.debug_log("Step 4: Split Payload", f"{len(payload_compressed)} bytes (compressed)")
             
+            # 5. Cryptographic Verification (Final Fix: Ed25519 direct verify)
             pub_key = serialization.load_pem_public_key(issuer_info['pub_key_pem'].encode('utf-8'))
-            pub_key.verify(signature_bytes, payload_compressed)
-            self.log_message("SUCCESS: Cryptographic signature is valid.", "success")
-            self.debug_log("Step 5: Signature Verify", "OK", "success")
-
-            payload_cbor = zlib.decompress(payload_compressed, wbits=-15)
-            self.debug_log("Step 6: Decompressed", f"{len(payload_cbor)} bytes (CBOR)")
+            pub_key.verify(signature_bytes, payload_compressed) # Correct Ed25519 verification
             
-            decoded_payload = cbor2.loads(payload_cbor)
-            pretty_payload = json.dumps({k: (v.hex() if isinstance(v, bytes) else v) for k, v in decoded_payload.items()}, indent=2)
-            self.debug_log("Step 7: Decoded CBOR", f"\n{pretty_payload}")
+            self.log_message("SUCCESS: Cryptographic signature is valid.", "success")
 
+            # 6. Decompress and decode the payload
+            payload_cbor = zlib.decompress(payload_compressed, wbits=-15)
+            decoded_payload = cbor2.loads(payload_cbor)
+
+            # 7. Extract data
             public_message = decoded_payload.get('m', 'No message provided.')
             doc_num = decoded_payload.get('n')
             self.root.after(0, self.render_formatted_text, public_message, doc_num)
@@ -322,46 +274,50 @@ class VerifierApp:
             expected_hash = decoded_payload.get('h', b'').hex()
             if not filename_stem or not expected_hash:
                 raise ValueError("Payload is missing image filename or hash.")
-            self.log_message("Payload decoded. Now verifying control image...")
+            self.log_message("Payload decoded. Now verifying control file integrity...")
             
             payload_for_fetch = {'imgId': f"{filename_stem}.lky", 'h': expected_hash}
             self.fetch_and_verify_doc_image(issuer_info, payload_for_fetch)
 
-        except Exception as e:
+        except InvalidSignature:
+            self.log_message("VERIFICATION FAILED: Invalid cryptographic signature.", "failure")
+            self.root.after(0, self.display_error_on_image_area, "VERIFICATION FAILED!\n\nInvalid Signature: This is NOT an authentic Legato Key.")
+        except ValueError as e:
             self.log_message(f"VERIFICATION FAILED: {e}", "failure")
-            self.debug_log("PROCESS FAILED", str(e), "error")
-            self.root.after(0, self.display_error_on_image_area, f"VERIFICATION FAILED!\n\nThis certificate is NOT authentic.\n\nError: {e}")
+            self.root.after(0, self.display_error_on_image_area, f"VERIFICATION FAILED!\n\nError: {e}")
+        except Exception as e:
+            self.log_message(f"VERIFICATION FAILED: An unexpected error occurred: {e}", "failure")
+            self.root.after(0, self.display_error_on_image_area, f"VERIFICATION FAILED!\n\nUnexpected Error: {e}")
 
     def fetch_and_verify_doc_image(self, issuer_info, payload):
-        self.log_message("Fetching control image from issuer's server...")
+        self.log_message("Fetching control file from issuer's server...")
         base_url = issuer_info.get("image_base_url"); img_id = payload.get("imgId")
         if not base_url or not img_id:
-            self.log_message("Image URL or ID missing in QR payload.", "failure")
+            self.log_message("ERROR: Image URL or ID missing in QR payload.", "failure")
             self.root.after(0, self.display_error_on_image_area, "Signature is valid, but image URL is missing.")
             return
 
-        full_image_url = os.path.join(base_url, img_id).replace("\\", "/")
-        self.log_message(f"Requesting URL: {full_image_url}")
+        full_lky_url = os.path.join(base_url, img_id).replace("\\", "/")
         try:
-            response = requests.get(full_image_url, timeout=10); response.raise_for_status()
+            response = requests.get(full_lky_url, timeout=10); response.raise_for_status()
             lky_file_data = response.content
             self.log_message("SUCCESS: Control LKY file successfully downloaded.", "success")
 
             self.log_message("Verifying LKY file integrity with checksum...")
             expected_hash = payload.get('h')
             
-            calculated_hash = hashlib.sha256(lky_file_data).hexdigest()
-            self.log_message(f"   - Expected Hash: {expected_hash}")
-            self.log_message(f"   - Calculated Hash: {calculated_hash}")
+            # FINAL FIX: Truncate the hash to 32 chars to match the signing app.
+            calculated_hash = hashlib.sha256(lky_file_data).hexdigest()[:32]
 
             if calculated_hash != expected_hash:
-                self.log_message("FAILURE: LKY file integrity check FAILED! The file on the server may have been altered.", "failure")
-                raise ValueError("LKY file on server does not match original signature.")
+                self.log_message("FAILURE: LKY file integrity check FAILED!", "failure")
+                self.log_message(f"   - Expected Hash: {expected_hash}", "failure")
+                self.log_message(f"   - Calculated Hash: {calculated_hash}", "failure")
+                raise ValueError("INTEGRITY CHECK FAILED: The file on the server has been modified.")
             
             self.log_message("SUCCESS: LKY file integrity confirmed. Checksum matches.", "success")
             
-            # Now, we must extract the image from the LKY file to display it
-            # This is a simplified extraction assuming the manifest is at the end
+            # Extract image
             manifest_len_bytes = lky_file_data[-4:]
             manifest_len = int.from_bytes(manifest_len_bytes, 'big')
             manifest_start = len(lky_file_data) - 4 - manifest_len
@@ -383,9 +339,10 @@ class VerifierApp:
                 self.doc_image_label.config(image=img_tk),
                 setattr(self.doc_image_label, 'image', img_tk)
             ])
+            self.log_message("SUCCESS: Authenticated image displayed.", "success")
         except Exception as e:
-            self.log_message(f"ERROR: Failed to load or verify image: {e}", "failure")
-            self.root.after(0, self.display_error_on_image_area, f"! Warning: This is a valid certificate, but the control image could not be loaded or verified. Error: {e}")
+            self.log_message(f"ERROR: Failed during file download or LKY extraction: {e}", "failure")
+            self.root.after(0, self.display_error_on_image_area, f"! Warning: Valid certificate, but control file failed integrity or download check. Error: {e}")
 
     def display_error_on_image_area(self, message):
         error_img_tk = self.create_text_image((750, 750), message, color="#FFF3CD", text_color="#D9534F")
@@ -408,10 +365,12 @@ class VerifierApp:
         self.decoded_message_text.config(state="normal")
         self.decoded_message_text.delete("1.0", "end")
         
+        # Display document number if available
         if doc_num:
             self.decoded_message_text.insert("end", "Document #: ", "bold")
             self.decoded_message_text.insert("end", f"{doc_num}\n\n", "green")
         
+        # Display the signed message
         self.decoded_message_text.insert("end", message)
         self.decoded_message_text.config(state="disabled")
 
@@ -421,10 +380,34 @@ class VerifierApp:
             for issuer_id, data in sorted(self.issuers.items()):
                 self.issuer_tree.insert('', 'end', values=(issuer_id, data['name'], data.get('infoUrl', 'N/A')))
 
-    def add_issuer_from_data(self, data):
+    def process_issuer_data_flow(self, qr_string):
+        """Dispatches to the correct issuer data processor (JSON vs. Compressed)."""
+        data = None
         try:
-            issuer_id = data.get('id')
-            name_in_qr = data.get('name') or data.get('issuername')
+            if qr_string.strip().startswith('{'):
+                # Legacy JSON Issuer
+                data = json.loads(qr_string)
+            elif ':' not in qr_string:
+                # New Compressed Issuer (No colon separator, full string is B45 payload)
+                compressed_data = base45.b45decode(qr_string)
+                json_string = zlib.decompress(compressed_data).decode('utf-8')
+                data = json.loads(json_string)
+            else:
+                # Fallback for unexpected format
+                raise ValueError("QR string does not match any known issuer format.")
+
+            if data:
+                self._add_issuer_from_payload(data)
+
+        except Exception as e:
+            self.log_message(f"ERROR: Failed to decode/process Issuer QR payload: {e}", "failure")
+            messagebox.showerror("Error", f"Failed to process Issuer QR: {e}")
+
+    def _add_issuer_from_payload(self, data):
+        """Fetches public key and adds new issuer to the trusted database."""
+        try:
+            issuer_id = data.get('id', data.get('issuer_id', 'N/A')).strip().lower()
+            name_in_qr = data.get('name', data.get('issuerName', 'N/A'))
             info_url = data.get('infoUrl')
 
             if not all([issuer_id, name_in_qr, info_url]):
@@ -450,7 +433,7 @@ class VerifierApp:
             if not pub_key_pem: raise ValueError("Public key file is missing 'publicKeyPem' field.")
             
             self.log_message("Validating public key format...")
-            serialization.load_pem_public_key(pub_key_pem.encode('utf-8'))
+            serialization.load_pem_public_key(pub_key_pem.encode('utf-8')) # Validates PEM format
             self.log_message("SUCCESS: Public key is valid.", "success")
             
             self.issuers[issuer_id] = {
@@ -463,23 +446,8 @@ class VerifierApp:
             messagebox.showinfo("Success", f"Successfully learned and trusted issuer: {official_name}")
             
         except Exception as e:
-            self.log_message(f"ERROR: Failed to process Issuer Data: {e}", "failure")
-            messagebox.showerror("Error", f"Failed to process Issuer Data: {e}")
-
-    def process_issuer_qr(self, qr_string):
-        try:
-            self.log_message("Decoding Base45 stream for Issuer QR...")
-            compressed_data = base45.b45decode(qr_string)
-            self.log_message("Decompressing zlib data...")
-            json_string = zlib.decompress(compressed_data).decode('utf-8')
-            data = json.loads(json_string)
-            self.log_message("SUCCESS: Decoded Issuer QR payload.", "success")
-            
-            self.add_issuer_from_data(data)
-            
-        except Exception as e:
-            self.log_message(f"ERROR: Failed to process compressed Issuer QR: {e}", "failure")
-            messagebox.showerror("Error", f"Failed to process compressed Issuer QR: {e}")
+            self.log_message(f"ERROR: Failed to add issuer: {e}", "failure")
+            messagebox.showerror("Error", f"Failed to add issuer: {e}")
 
     def delete_selected_issuer(self):
         selected_item = self.issuer_tree.focus()
