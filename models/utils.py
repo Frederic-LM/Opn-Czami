@@ -1,17 +1,29 @@
-# --- START OF FILE models/utils.py (FINAL, CORRECTED VERSION) ---
-
 # utils.py
-
+# Copyright (C) 2025 Frédéric Levi Mazloum
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see
+# <https://www.gnu.org/licenses/>.
 import sys
 import logging
 from pathlib import Path
 
-# --- Platform-specific Conditional Imports for Message Boxes ---
-# This check isolates Tkinter to ONLY non-macOS platforms, preserving the Windows experience.
+# --- non Mac Mac cuisine because they think different ---
+# isolates Tkinter to ONLY non-macOS platforms, preserving the Windows experience.
 TKINTER_MESSAGEBOX_AVAILABLE = False
 if sys.platform != 'darwin':
     try:
-        # NOTE: This import will now work because you are running Tkinter/ttkbootstrap on Windows/Linux
+        # NOTE: This now work because we are running on Windows/Linux
         from tkinter import messagebox 
         TKINTER_MESSAGEBOX_AVAILABLE = True
     except ImportError:
@@ -32,16 +44,16 @@ def get_app_data_path(app_name="OpnCzami") -> Path:
 
 def resource_path(relative_path: str) -> Path:
     """ 
-    FIXED: Get absolute path to resource. Uses sys.argv[0] for reliable project root detection 
-    in development/script mode, regardless of where the module file is located.
+    FIXED: Get absolute path to resource. Uses sys.argv[0] for reliable root detection 
+    in both executable and py environments.
     """
     try:
-        # 1. PyInstaller Path (always available in frozen environment)
+        # 1. PyInstaller Path
         base_path = Path(sys._MEIPASS)
     except AttributeError:
-        # 2. Development/Script Run Path
-        # Get the directory of the script that *started* the application (e.g., opnczamimac.py)
-        # This is CRITICAL for preventing failure when run directly or when module paths change.
+        # 2. Script Run Path
+        # Get the directory of the script that *started* the application (e.g., opnczami_mac.py)
+        # CRITICAL for preventing failure if module paths change.
         base_path = Path(sys.argv[0]).parent.resolve()
         
     return base_path / "assets" / relative_path
@@ -68,5 +80,3 @@ def show_info(title: str, message: str):
     # Only display the Tkinter message box if on a supported OS (non-Mac)
     if TKINTER_MESSAGEBOX_AVAILABLE:
         messagebox.showinfo(title, message)
-        
-# --- END OF FILE models/utils.py ---

@@ -1,18 +1,53 @@
 # config.py
+# Copyright (C) 2025 Frédéric Levi Mazloum
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see
+# <https://www.gnu.org/licenses/>.
+#
+
+
+
 
 import sys
 from pathlib import Path
 from models.utils import get_app_data_path
 
+
 # --- Application Constants ---
-APP_VERSION = "2.0.3"
+APP_VERSION = "3.3.7"
 APP_NAME = "OpnCzami"
 KEYRING_SERVICE_NAME = "OperatorIssuerApp"
-KEY_CHUNK_SIZE = 1000  # For splitting secrets for keyring storage
+KEY_CHUNK_SIZE = 1000  # (windows hack) we split the secrets otherwise windows find it too long to be stored -_-
 MAX_SUMMARY_CHARS = 400
 MAX_LOGO_SIZE_BYTES = 256 * 1024  # 256 KB
-MAX_LOGO_PIXELS = 74000  # Approx. 400x185
+MAX_LOGO_PIXELS = 74000  # Approx. 400x185 (recomended)
 STANDARDIZED_LOGO_BASENAME = "my-legato-link-logo"
+
+# --- Buffer/Chunk Size Constants ---
+HASH_BUFFER_SIZE = 4096  # Buffer size for file hashing operations
+DOWNLOAD_CHUNK_SIZE = 8192  # Chunk size for HTTP downloads
+
+# --- Network Constants ---
+FTP_TIMEOUT_SECONDS = 15  # Standard timeout setting for FTP
+FTP_MAX_RETRIES = 3  # Max retry attempts
+FTP_RETRY_DELAY = 2  # Be polite (seconds between retries)
+
+# HTTP Request Timeouts (seconds)
+HTTP_TIMEOUT_INSTANT = 3  # For startup checks (fail fast)
+HTTP_TIMEOUT_SHORT = 10  # For quick API calls (version checks, info fetches)
+HTTP_TIMEOUT_STANDARD = 15  # For standard operations (license renewal)
+HTTP_TIMEOUT_LONG = 20  # For backend operations (anchoring, registrations)
 
 # --- Path Definitions ---
 APP_DATA_DIR = get_app_data_path(APP_NAME)
@@ -31,9 +66,8 @@ APP_LOG_FILE = LOG_DIR / "opn-czami-app.log"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# --- Application-Specific Enums & Data Structures ---
-
-# Document and Item type definitions
+# --- Application-Specific ---
+# (Leaving these here for future functionality expansion but as Enums)
 DOC_TYPES = {
     "2": "Valuation Letter", "3": "Report", "4": "Other"
 }
@@ -44,3 +78,10 @@ ITEM_TYPES = {
 }
 DOC_TYPES_REVERSE = {v: k for k, v in DOC_TYPES.items()}
 ITEM_TYPES_REVERSE = {v: k for k, v in ITEM_TYPES.items()}
+
+# --- Pro Feature Constants ---
+FEATURE_WATERMARK = "watermark"
+FEATURE_AUDIT = "audit"
+FEATURE_BATCH = "batch"
+FEATURE_MASKED_IDS = "masked_ids"
+FEATURE_WEB3 = "web3"

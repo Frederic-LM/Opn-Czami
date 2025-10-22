@@ -1,4 +1,20 @@
 # crypto_manager.py
+# Copyright (C) 2025 Frédéric Levi Mazloum
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see
+# <https://www.gnu.org/licenses/>.
+#
 
 import base64
 import base58
@@ -15,12 +31,13 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Union
-
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from models.config import KEY_CHUNK_SIZE, AUDIT_LOG_FILENAME_TEMPLATE
-from models.utils import show_error
+# Corrected Imports
+from models.exceptions import KeystoreError, FileAccessError, HashCalculationError, AuditLogError
+from models.config import KEY_CHUNK_SIZE, AUDIT_LOG_FILENAME_TEMPLATE, HASH_BUFFER_SIZE
 
 class KeyStorage(Enum):
     """Enumeration for where a private key is stored."""
@@ -28,14 +45,36 @@ class KeyStorage(Enum):
     FILE = "STORED_IN_FILE"
 
 class CryptoManager:
+
+
+    def get_public_key_pem(self, key_location: str, issuer_id: str, key_path: Path = None) -> Union[str, None]:
+        """
+        Retrieves the private key and derives its corresponding public key 
+        """
+        try:
+            private_key_pem = self.get_private_key(key_location, issuer_id, key_path)
+            if not private_key_pem:
+                return None
+            
+            priv_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+            
+            return priv_key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode("utf-8")
+
+        except Exception as e:
+            logging.error(f"Failed to derive public key for issuer {issuer_id}: {e}", exc_info=True)
+            return None
+
     """Manages all cryptographic operations and secure storage."""
     def __init__(self, service_name: str, app_data_dir: Path):
         self.service_name = service_name
         self.app_data_dir = app_data_dir
         self.log_dir = self.app_data_dir / "logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
-
-    def _save_to_keystore(self, key_name: str, secret_value: str) -> bool:
+        
+    def _save_to_keystore(self, key_name: str, secret_value: str):
         """Saves a secret to the OS keystore, chunking if necessary."""
         try:
             b64_secret = base64.b64encode(secret_value.encode("utf-8")).decode("utf-8")
@@ -44,10 +83,8 @@ class CryptoManager:
             keyring.set_password(self.service_name, f"{key_name}_meta", json.dumps(metadata))
             for i, chunk in enumerate(chunks):
                 keyring.set_password(self.service_name, f"{key_name}_chunk_{i}", chunk)
-            return True
         except Exception as e:
-            show_error("Keystore Error", f"Could not save secret to OS keystore: {e}")
-            return False
+            raise KeystoreError(f"Could not save secret to OS keystore: {e}") from e
 
     def _load_from_keystore(self, key_name: str) -> Union[str, None]:
         """Loads a secret from the OS keystore, reassembling chunks."""
@@ -61,8 +98,7 @@ class CryptoManager:
                 raise ValueError(f"Missing chunks for '{key_name}' in keystore.")
             return base64.b64decode("".join(chunks)).decode("utf-8")
         except Exception as e:
-            show_error("Keystore Error", f"Could not load secret from OS keystore: {e}")
-            return None
+            raise KeystoreError(f"Could not load secret from OS keystore: {e}") from e
 
     def _delete_from_keystore(self, key_name: str):
         """Deletes a secret and its metadata from the OS keystore."""
@@ -79,8 +115,8 @@ class CryptoManager:
         except Exception as e:
             logging.warning(f"Could not fully delete '{key_name}' from keystore: {e}", exc_info=True)
 
-    def save_private_key_to_keystore(self, issuer_id: str, private_key_pem: str) -> bool:
-        return self._save_to_keystore(issuer_id, private_key_pem)
+    def save_private_key_to_keystore(self, issuer_id: str, private_key_pem: str):
+        self._save_to_keystore(issuer_id, private_key_pem)
 
     def load_private_key_from_keystore(self, issuer_id: str) -> Union[str, None]:
         return self._load_from_keystore(issuer_id)
@@ -88,8 +124,8 @@ class CryptoManager:
     def delete_private_key_from_keystore(self, issuer_id: str):
         self._delete_from_keystore(issuer_id)
 
-    def save_ftp_password(self, issuer_id: str, password: str) -> bool:
-        return self._save_to_keystore(f"{issuer_id}_ftp", password)
+    def save_ftp_password(self, issuer_id: str, password: str):
+        self._save_to_keystore(f"{issuer_id}_ftp", password)
 
     def load_ftp_password(self, issuer_id: str) -> Union[str, None]:
         return self._load_from_keystore(f"{issuer_id}_ftp")
@@ -97,11 +133,10 @@ class CryptoManager:
     def delete_ftp_password(self, issuer_id: str):
         self._delete_from_keystore(f"{issuer_id}_ftp")
         
-    @lru_cache(maxsize=2) # Cache the last 2 keys, just in case
+    @lru_cache(maxsize=2)
     def get_private_key(self, key_location: str, issuer_id: str, key_path: Path = None) -> Union[str, None]:
         """
         Loads the private key from its source (keystore or file) and caches the result.
-        This method is the single point of entry for retrieving a private key.
         """
         logging.info(f"Loading private key for {issuer_id} from {key_location}...")
         if key_location == KeyStorage.KEYSTORE.value:
@@ -109,9 +144,8 @@ class CryptoManager:
         elif key_location == KeyStorage.FILE.value and key_path:
             try:
                 return key_path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                show_error("Fatal Error", f"Private key file missing: {key_path}. The identity is unusable.")
-                return None
+            except FileNotFoundError as e:
+                raise FileAccessError(f"Private key file missing: {key_path}. The identity is unusable.") from e
         return None
     
     @staticmethod
@@ -146,57 +180,52 @@ class CryptoManager:
     def calculate_file_hash(filepath_or_buffer) -> Union[str, None]:
         """
         Calculates the SHA-256 hash of a file path OR an in-memory buffer.
-        Returns the first 32 chars of the hex digest.
         """
         hasher = hashlib.sha256()
         try:
-            # Check if the input is a file path object from the 'pathlib' library
             if isinstance(filepath_or_buffer, Path):
-                if not filepath_or_buffer.exists(): 
+                if not filepath_or_buffer.exists():
                     logging.error(f"Hash calculation failed: Path does not exist at '{filepath_or_buffer}'")
                     return None
                 with filepath_or_buffer.open("rb") as f:
-                    while chunk := f.read(4096):
+                    while chunk := f.read(HASH_BUFFER_SIZE):
                         hasher.update(chunk)
-            
-            # Check if the input is an in-memory, file-like object (like io.BytesIO)
             elif hasattr(filepath_or_buffer, 'read'):
-                filepath_or_buffer.seek(0) # IMPORTANT: Rewind the buffer to the beginning
-                while chunk := filepath_or_buffer.read(4096):
+                filepath_or_buffer.seek(0)
+                while chunk := filepath_or_buffer.read(HASH_BUFFER_SIZE):
                     hasher.update(chunk)
-                filepath_or_buffer.seek(0) # Rewind again for good measure in case it's reused
-            
-            # If it's neither, we can't process it
+                filepath_or_buffer.seek(0)
             else:
-                show_error("Hash Error", f"Invalid input type for hash calculation: {type(filepath_or_buffer)}")
-                return None
+                raise HashCalculationError(f"Invalid input type for hash calculation: {type(filepath_or_buffer)}")
                 
-            return hasher.hexdigest()[:32]
+            return hasher.hexdigest()[:32] 
             
         except Exception as e:
-            show_error("File Hash Error", f"An error occurred during hash calculation: {e}")
-            logging.error(f"Error in calculate_file_hash: {e}", exc_info=True)
-            return None
+            raise HashCalculationError(f"An error occurred during hash calculation: {e}") from e
 
     @staticmethod
     def sign_payload(private_key_pem: str, payload_dict: dict) -> str:
-        """Signs a dictionary payload with a private key and returns a urlsafe base64 signature."""
+        """Signs a dictionary payload with a private key and returns a Base58 signature."""
         priv_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
         payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
         signature = priv_key.sign(payload_json)
         return base58.b58encode(signature).decode("utf-8") 
 
     @staticmethod
-    def verify_signature(public_key_pem: str, signature_b64: str, payload_dict: dict) -> bool:
-        """Verifies a signature against a public key and payload using Ed25519 and Base64URL."""
+    def verify_signature(public_key_pem: str, signature_b58: str, payload_dict: dict) -> bool:
+        """Verifies a signature against a public key and payload using Ed25519 and Base58."""
         try:
             pub_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
             payload_json = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-            signature = base64.urlsafe_b64decode(signature_b64)
+            signature = base58.b58decode(signature_b58.encode("utf-8"))
+            
+            if not isinstance(pub_key, ed25519.Ed25519PublicKey):
+                raise TypeError("Public key is not a valid Ed25519 key for verification.")
+
             pub_key.verify(signature, payload_json)
             return True
         
-        except (InvalidSignature, ValueError, Exception):
+        except (InvalidSignature, ValueError, TypeError, Exception):
             return False
 
     def get_audit_log_path(self, issuer_id: str) -> Path:
@@ -226,16 +255,12 @@ class CryptoManager:
             json_part, _ = last_line.split("::", 1)
             return hashlib.sha256(json_part.encode("utf-8")).hexdigest()
         except Exception as e:
-            show_error(
-                "Audit Log Warning",
-                f"Could not read last audit trail entry. A new chain may start. Error: {e}",
-            )
-            return None
+            raise AuditLogError(f"Could not read last audit trail entry. Error: {e}") from e
 
     def log_event(self, issuer_id: str, private_key_pem: str, event_type: str, details: dict):
         """Creates and appends a cryptographically signed entry to the audit log."""
+        log_path = self.get_audit_log_path(issuer_id)
         try:
-            log_path = self.get_audit_log_path(issuer_id)
             previous_hash = self.get_last_log_hash(log_path)
 
             log_entry = {
@@ -246,27 +271,38 @@ class CryptoManager:
                 "previous_hash": previous_hash,
             }
 
-            signature_b64 = self.sign_payload(private_key_pem, log_entry)
-            log_line = f"{json.dumps(log_entry, separators=(',', ':'))}::{signature_b64}\n"
+            signature_b58 = self.sign_payload(private_key_pem, log_entry)
+            log_line = f"{json.dumps(log_entry, separators=(',', ':'))}::{signature_b58}\n"
 
             with log_path.open("a", encoding="utf-8") as f:
                 f.write(log_line)
             
             logging.info(f"Logged event '{event_type}' to audit trail.")
 
-            try:
-                head_hash_path = log_path.with_suffix(".head")
-                entry_json = json.dumps(log_entry, separators=(",", ":")).encode("utf-8")
-                current_entry_hash = hashlib.sha256(entry_json).hexdigest()
-                head_hash_path.write_text(current_entry_hash, encoding="utf-8")
-            except Exception as e:
-                show_error(
-                    "Audit Log Critical Failure",
-                    f"Could not update audit trail's head file. Log may be inconsistent. Error: {e}",
-                )
+            head_hash_path = log_path.with_suffix(".head")
+            entry_json = json.dumps(log_entry, separators=(",", ":")).encode("utf-8")
+            current_entry_hash = hashlib.sha256(entry_json).hexdigest()
+            head_hash_path.write_text(current_entry_hash, encoding="utf-8")
 
+        except AuditLogError as e:
+            raise e
         except Exception as e:
-            show_error(
-                "Audit Log Failure",
-                f"Could not write log entry. Check permissions for '{log_path.name}'. Error: {e}",
-            )
+            error_type = "update audit trail's head file" if 'head_hash_path' in locals() else "write log entry"
+            raise AuditLogError(f"Could not {error_type}. Check permissions. Error: {e}") from e
+
+     # Web3 secure storage manager for reworked Web3 module Filebase credentials
+    def save_filebase_credentials(self, issuer_id: str, key: str, secret: str):
+        """Saves Filebase credentials to the OS keystore."""
+        self._save_to_keystore(f"{issuer_id}_filebase_key", key)
+        self._save_to_keystore(f"{issuer_id}_filebase_secret", secret)
+
+    def load_filebase_credentials(self, issuer_id: str) -> tuple[Union[str, None], Union[str, None]]:
+        """Loads Filebase credentials from the OS keystore."""
+        key = self._load_from_keystore(f"{issuer_id}_filebase_key")
+        secret = self._load_from_keystore(f"{issuer_id}_filebase_secret")
+        return key, secret
+
+    def delete_filebase_credentials(self, issuer_id: str):
+        """Deletes Filebase credentials from the OS keystore."""
+        self._delete_from_keystore(f"{issuer_id}_filebase_key")
+        self._delete_from_keystore(f"{issuer_id}_filebase_secret")
