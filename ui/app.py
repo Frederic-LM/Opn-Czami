@@ -182,12 +182,10 @@ class OpnCzamiApp:
             logging.error(f"Could not set window icon: {e}", exc_info=True)
 
     def _bind_events(self):
-        """Binds root-level events."""
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.bind("<Configure>", self._on_configure_debounced)
 
     def on_close(self):
-        """Handles application shutdown procedures."""
         temp_dir = APP_DATA_DIR / "temp_upload"
         if temp_dir.exists() and temp_dir.is_dir():
             try:
@@ -195,6 +193,7 @@ class OpnCzamiApp:
                 logging.info(f"Securely removed temp directory: {temp_dir}")
             except OSError as e:
                 logging.warning(f"Could not fully remove temp directory on exit: {e}")
+        self.logic.license_manager.stop_watcher()
         self.root.destroy()
 
     # --- DPI/Scaling ---
@@ -521,14 +520,7 @@ class OpnCzamiApp:
     # --- License Management (Global) ---
 
     def start_license_watcher_threaded(self):
-        if sys.platform != 'darwin' or self.logic.license_manager.is_licensed: return
-        if getattr(self, "_license_watcher_running", False): return
-        self._license_watcher_running = True
-        threading.Thread(target=self._license_watcher_worker, daemon=True).start()
-
-    def _license_watcher_worker(self):
-        self.logic.license_manager.license_watcher_worker(self.on_license_activated_by_watcher)
-        self._license_watcher_running = False
+        self.logic.license_manager.start_watcher(self.on_license_activated_by_watcher)
 
     def on_license_activated_by_watcher(self):
         self.root.after(0, lambda: show_info("Activation Successful!", f"Professional license for '{self.logic.license_manager.customer_info}' has been activated!\n\nAll features are now unlocked."))

@@ -746,30 +746,48 @@ class SettingsTabs:
 
         self.settings_tab_frame.after(0, update_ui)
 
-    def handle_toggle_hardened_security(self):
-        """
-        Handles toggling hardened security. Preserves original call pattern and behavior.
-        Note: the original implementation referenced 'success' and 'message' after calling the logic;
-        this refactor keeps that flow intact (even if the logic returns None), to avoid behavioral changes.
-        """
-        is_enabling = self.hardened_security_var.get()
-        action = "ENABLING" if is_enabling else "DISABLING"
-        warning = ("This will move secrets into the secure OS Keychain." if is_enabling else "WARNING: This will move secrets OUT of the secure OS Keychain.")
-        if not messagebox.askokcancel(f"Confirm {action} Hardened Security", f"{warning}\nProceed?", icon=INFO if is_enabling else WARNING):
-            return self.hardened_security_var.set(not is_enabling)
 
-        self.logic.handle_toggle_hardened_security(is_enabling, self.ftp_pass_entry.get())
+    def handle_toggle_hardened_security(self, enable_security: bool, ftp_password: str):
+        """Moves the private data between DB and OS on hardened security."""
+        if not self.active_issuer_id:
+            return show_error("Error", "No active identity to modify.")
 
         try:
-            if success:
-                show_info("Success", message)
-                self.logic.reload_data_and_update_ui()
-            else:
-                show_error("Security Operation Failed", f"{message}\n\nReverting change.")
-                self.hardened_security_var.set(not is_enabling)
-        except Exception:
+            # 1. First, load the ACTUAL private key from wherever it is currently stored.
+            key_location = self.active_issuer_data.get("priv_key_pem")
+            key_path = APP_DATA_DIR / KEY_FILENAME_TEMPLATE.format(issuer_id=self.active_issuer_id)
+            real_private_key_pem = self.crypto_manager.get_private_key(key_location, self.active_issuer_id, key_path)
 
-            logging.debug("handle_toggle_hardened_security: result variables not available; continuing.")
+            if not real_private_key_pem:
+                raise KeystoreError("Could not retrieve the current private key to perform the security toggle.")
+            
+            # 2. Now, call the identity manager with the REAL key.
+            success, result = self.identity_manager.toggle_hardened_security(
+                enable_security,
+                self.active_issuer_id,
+                real_private_key_pem,
+                ftp_password
+            )
+
+            if success:
+                new_key_location = result
+                self.all_issuer_data[self.active_issuer_id]["priv_key_pem"] = new_key_location
+                self.config.hardened_security = enable_security
+                
+                # Retrieve latest UI data (excluding the password which is handled here)
+                ui_config_data = self.ui_callback.get_ui_config_data()
+                ui_config_data.pop("ftp_password", None)
+                self.sync_and_save_settings(ui_config_data, ftp_password)
+                
+                show_info("Success", "Security settings updated successfully.")
+                self.reload_data_and_update_ui()
+            else:
+                raise Exception(result)
+
+        except Exception as e:
+            # If anything fails, show an error and force the UI checkbox to revert.
+            show_error("Security Operation Failed", f"{e}\n\nReverting the change.")
+            self.ui_callback.root.after(0, self.ui_callback.update_ui_state)
 
     def handle_create_backup(self):
         if not self.logic.active_issuer_id:
