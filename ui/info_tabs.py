@@ -100,12 +100,50 @@ This summary will be securely encrypted and embedded in the LegatoKey and cannot
         """Creates all widgets for the 'About' tab."""
         outer_container = ttk.Frame(parent_frame)
         outer_container.pack(fill="both", expand=True, padx=20, pady=20)
-        
+
+        # Header frame with 3 columns: image | text | image
         header_frame = ttk.Frame(outer_container)
-        header_frame.pack(fill="x", pady=(0, 15), anchor="n")
-        ttk.Label(header_frame, text="Op’n-Czami", font="-size 24 -weight bold").pack()
-        ttk.Label(header_frame, text="Legato-Key Certification Authority Dashboard", font="-size 12", bootstyle="secondary").pack(pady=(5, 0))
-        ttk.Label(header_frame, text=f"Version {APP_VERSION}", font="-size 10", bootstyle="info").pack(pady=(10, 0))
+        header_frame.pack(pady=(0, 15), anchor="center")
+        header_frame.grid_columnconfigure((0, 1, 2), weight=0)
+        header_frame.grid_rowconfigure(0, weight=0)
+
+        # --- LEFT: Logo ---
+        try:
+            from models.utils import resource_path
+            logo_path = resource_path("logo.png")
+            if logo_path.exists():
+                from PIL import Image, ImageTk
+                logo_img = Image.open(logo_path)
+                logo_img.thumbnail((120, 120), Image.Resampling.LANCZOS)
+                logo_photo = ImageTk.PhotoImage(logo_img)
+                left_logo_label = ttk.Label(header_frame, image=logo_photo)
+                left_logo_label.image = logo_photo
+                left_logo_label.grid(row=0, column=0, padx=(0, 20), sticky="w")
+        except Exception as e:
+            logging.warning(f"Could not load logo.png: {e}")
+
+        # --- CENTER: Text Information ---
+        center_frame = ttk.Frame(header_frame)
+        center_frame.grid(row=0, column=1, sticky="nsew", padx=20)
+        ttk.Label(center_frame, text="Op'n-Czami", font="-size 24 -weight bold").pack()
+        ttk.Label(center_frame, text="Legato-Key Certification Authority Dashboard", font="-size 12", bootstyle="secondary").pack(pady=(5, 0))
+        ttk.Label(center_frame, text="© 2025 Frédéric Levi Mazloum. All rights reserved.", font="-size 8", bootstyle="secondary").pack(pady=(3, 0))
+        ttk.Label(center_frame, text=f"Version {APP_VERSION}", font="-size 10", bootstyle="info").pack(pady=(10, 0))
+
+        # --- RIGHT: AL Logo (2x bigger) ---
+        try:
+            from models.utils import resource_path
+            al_path = resource_path("AL.png")
+            if al_path.exists():
+                from PIL import Image, ImageTk
+                al_img = Image.open(al_path)
+                al_img.thumbnail((160, 160), Image.Resampling.LANCZOS)
+                al_photo = ImageTk.PhotoImage(al_img)
+                right_logo_label = ttk.Label(header_frame, image=al_photo)
+                right_logo_label.image = al_photo
+                right_logo_label.grid(row=0, column=2, padx=(20, 0), sticky="e")
+        except Exception as e:
+            logging.warning(f"Could not load AL.png: {e}")
         
         ttk.Separator(outer_container, orient="horizontal").pack(fill="x", pady=15)
         
@@ -119,31 +157,29 @@ This summary will be securely encrypted and embedded in the LegatoKey and cannot
         description_frame = ttk.LabelFrame(info_frame, text="About This Application", padding=15)
         description_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         description_text = "Op'n Cezami is a professional-grade, open-source signing tool for creating tamper-proof, cryptographically signed digital certificates. Part of the Legato Key ecosystem for issuing linked physical + digital certificates that anyone can verify."
-        desc_label = ttk.Label(description_frame, text=description_text, justify="left", wraplength=250)
-        desc_label.pack(fill="x")
-        description_frame.bind("<Configure>", lambda e, w=desc_label: w.config(wraplength=e.width - 20))
+        desc_label = ttk.Label(description_frame, text=description_text, justify="left", wraplength=200)
+        desc_label.pack(fill="x", anchor="nw")
+        description_frame.bind("<Configure>", lambda e, w=desc_label: w.config(wraplength=max(150, e.width - 30)))
         
              
         # --- COLUMN 1: License Text Frame  ---
         license_frame = ttk.LabelFrame(info_frame, text="Our Open Core License", padding=15)
         license_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 5))
-        
-        license_text = ("The core application is free & open-source (LGPL) even for commercial use. Some extra\n"
-                        "features require a Pro License (€300/year).\n\n"
-                        "This application is designed to be a trusted tool designed to respect your privacy. It's\n"
-                        "entire core codebase is public and can be audited."
+
+        license_text = ("The core application is free & open-source (LGPL) even for commercial use. Some extra features require a Pro License (€380/year).\n\n"
+                        "This application is designed to be a trusted tool that respects your privacy. The entire core codebase is public and can be audited."
                         )
-        license_label = ttk.Label(license_frame, text=license_text, justify="left")
-        license_label.pack(fill="x", anchor="w")
-        
+        license_label = ttk.Label(license_frame, text=license_text, justify="left", wraplength=200)
+        license_label.pack(fill="x", anchor="nw")
+
         github_button = ttk.Button(
             license_frame, text="View on GitHub ↗", bootstyle="link-primary",
             command=lambda: webbrowser.open("https://github.com/Frederic-LM/Opn-Czami")
         )
         github_button.pack(anchor="w", pady=(5,0))
-       
 
-        license_frame.bind("<Configure>", lambda e, w=license_label: w.config(wraplength=e.width - 20))
+
+        license_frame.bind("<Configure>", lambda e, w=license_label: w.config(wraplength=max(150, e.width - 30)))
         
         # --- COLUMN 2: License Status Frame (THE VERTICAL SPLIT) ---
         license_status_frame = ttk.Frame(info_frame) 
@@ -195,7 +231,7 @@ This summary will be securely encrypted and embedded in the LegatoKey and cannot
 
         footer_frame = ttk.Frame(outer_container)
         footer_frame.pack(fill="x", pady=(10, 0), side="bottom")
-        ttk.Label(footer_frame, text="© 2025 Frédéric Levi Mazloum. All rights reserved.", font="-size 8", bootstyle="secondary").pack()
+        # Copyright moved to header below "Legato-Key Certification Authority Dashboard"
 
 
     # --- Utility Methods ---

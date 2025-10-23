@@ -148,7 +148,7 @@ class SettingsTabs:
         # Trigger the logic layer to revert the state if the user is opting out of BYOK
         if not is_activating_byok:
             # Check if the anchor source was 'custom' before reverting
-            if self.logic.active_issuer_data.get("settings", {}).get("anchor_source") == "custom":
+            if self.logic.active_issuer_data and self.logic.active_issuer_data.get("settings", {}).get("anchor_source") == "custom":
                 # Preserve behavior: call the logic method that reverts
                 self.logic.revert_to_managed_anchor_threaded()
 
@@ -524,7 +524,7 @@ class SettingsTabs:
             fb_key, fb_secret = self.logic.crypto_manager.load_filebase_credentials(self.logic.active_issuer_id)
         except Exception:
             fb_key, fb_secret = ("", "")
-        fb_bucket = self.logic.active_issuer_data.get("settings", {}).get("filebase_bucket", "")
+        fb_bucket = self.logic.active_issuer_data.get("settings", {}).get("filebase_bucket", "") if self.logic.active_issuer_data else ""
 
         self.filebase_bucket_entry.delete(0, END)
         self.filebase_bucket_entry.insert(0, fb_bucket or "")
@@ -646,7 +646,7 @@ class SettingsTabs:
 
         is_licensed_pro = self.logic.license_manager.is_licensed
         has_web3_feature = self.logic.license_manager.is_feature_enabled(FEATURE_WEB3)
-        is_already_anchored = self.logic.active_issuer_data.get("ipfsCid") is not None
+        is_already_anchored = self.logic.active_issuer_data is not None and self.logic.active_issuer_data.get("ipfsCid") is not None
 
         selected_mode = self.anchor_mode_var.get()
 
