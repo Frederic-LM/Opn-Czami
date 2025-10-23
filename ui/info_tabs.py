@@ -250,7 +250,7 @@ This summary will be securely encrypted and embedded in the LegatoKey and cannot
             # This function was called before the UI was fully built.
             # We will ignore this update to prevent a crash.
             # The UI will get the correct state when it's fully loaded.
-                return
+            return
         self.current_ipfs_cid = ipfs_cid
         
         if ipfs_cid:
