@@ -140,20 +140,4 @@ Also free, available on Android, and possibly on iPhone. (curently under develop
 
 ---
 
-# FAQ
 
-❓ **"Is it compatible with the system you designed 14 years ago for a renowned bow expert?"**
-
-No.
-Legato-Key was built from the ground up with a completely different philosophy:
-
-| Old Design                  | Legato                                      |
-| --------------------------- | ------------------------------------------- |
-| Proprietary & Closed Source | Open standard & Open source                |
-| Manual Human Check          | Automated via cascaded cryptographic checks|
-| QR used solely as a link    | QR = cryptographic signature               |
-| Centralized infrastructure  | Self-sovereign, open, and offline-capable  |
-| Single point of failure     | Resilient to single point of failure       |
-| Online only                 | Online with offline fallback               |
-
-Anyone can verify a Legato Key certificate independently—with no account, no server, no company involved.
