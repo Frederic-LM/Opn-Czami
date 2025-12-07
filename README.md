@@ -92,23 +92,18 @@ You can install **Op'n Czami** on Windows using the official installer:
 ---
 
 ### 🍎 For macOS Users (Apple Silicon)
-❗macOS Build Notice:
-Due to performance issues caused by Apple's handling of Python GUI apps, I’ve decided to stop officially supporting the macOS build.
-You can still build it yourself from the source but I remove the pre compiled .dmg and  I recommend running the Windows version via an emulator (like UTM or Parallels) for a smoother experience.
+Op’n Czami is now supported on macOS (tested on Apple Silicon).
+The entire macOS build has been rebuilt from scratch to ensure smooth performance and proper behavior of the Python/Tcl-Tk interface.
 
-➡️ [Download for macOS (.dmg)](https://github.com/Frederic-LM/Opn-Czami/releases/download/MacOSDmg/opnczami.dmg)
-1. Download the `.dmg` file.
-2. Open it and drag **Op'n Czami** into your Applications folder.
-3. If you see a security warning, right-click the app and choose **Open** to allow it.
+➡️ Download for macOS (.dmg)
 
-🧠 *Tested on Apple Silicon (M1/M2/M3M4).* 
-You can download and run the macOS version, but be aware that it may feel sluggish or awkward to use. This isn’t a bug — it’s a *“feature”* related to the cult of the fruit (🍎) decided to handles **Tcl/Tk GUI applications written in Python**.
-Specifically, macOS enforces **Force Click** behavior on the trackpad, which can require a hard press for clicks to register properly. This affects interaction with the app’s interface.
+Download the .dmg.
+Open it and drag Op’n Czami into your Applications folder.
+If macOS shows a security prompt, right-click the app and choose Open.
 
-### Workaround Tips:
-- **Disable Force Click** in your Trackpad settings (System Settings > Trackpad > Point & Click).
-- Use the **Tab key** to navigate quickly through interface elements.
-It's unfortunate, as the app runs fast and smoothly on macOS — if only it didn’t force users to long-press to click. Hopefully, this behavior will improve with future updates to macOS or the Tcl/Tk libraries.
+🧠 Tested and verified on Apple Silicon (M1/M2/M3/M4).
+The app now behaves normally on macOS — no sluggish clicks, no long-press issues, no trackpad quirks.
+
 
 🔒 Notarization: App may require permissions due to macOS Gatekeeper.
 
@@ -120,24 +115,9 @@ If you run into any issues during installation, feel free to open an issue on th
 
 # 📱 Legato Phone App 
 
-Also free, available on Android, and possibly on iPhone. (curently under developement)
+Also free, available on Android, and possibly on iPhone. (curently deloid on Android invite only beta test)
 
 ---
 
-# Technical Details 
-    
-## 📁 File Structure Overview
-| File/Folder             | Purpose                                         |
-| ----------------------- | ----------------------------------------------- |
-| `OpnCzami`              | Main app                                        |
-| `opn_czami_settings`    | App config file                                 |
-| `abracadabra-*.key`     | 🔑 Your private signing key (**BACK THIS UP!**) |
-| `my-legato-link.json`   | Public identity info                            |
-| `my-legato-link-logo.*` | Your uploaded logo                              |
-| `Audit-Trail-*.log`     | Tamper-evident activity log                     |
-| `/Signed_Legato_Keys/`  | Output QR codes                                 |
-| `/Signed_Proofs/`       | Final images with watermarks                    |
-
----
 
 
