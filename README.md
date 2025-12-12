@@ -63,11 +63,12 @@ Op'n Czami is **fully open source**. This means:
 
 You're managing high-volume operations or need legal-grade evidence, entreprise log? I've got you covered.
 
-### Annual License Tools (à la carte)
+### Annual License Tools 
 - 🧾 **Batch Signing** — Sign hundreds of certificates in minutes.
 - ⛓️ **Tamper-Evident Audit Trail**: When enabled, the application maintains a cryptographically chained log of every signing and upload event. Similar to a blockchain, any attempt to tamper with the log is immediately detectable.
 - 🖋️ **Watermarking Tool** — Add your brand or logo automatically to images
 - 🤝 Priority Support — Get direct technical assistance when you need it most.
+- 🧠 Insignt on people using your signed documents
 
 
 ## 🎨 Need help with design, branding, or workflow setup?
@@ -93,7 +94,7 @@ You can install **Op'n Czami** on Windows using the official installer:
 
 ### 🍎 For macOS Users (Apple Silicon)
 Op’n Czami is now supported on macOS (tested on Apple Silicon).
-The entire macOS build has been rebuilt from scratch to ensure smooth performance and proper behavior of the Python/Tcl-Tk interface.
+I rewrote the entire source code from scratch for MacOS user to enjoy the smooth performance that windows and unix user had.
 
 ➡️ Download for macOS (.dmg)
 
