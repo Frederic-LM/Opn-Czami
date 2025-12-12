@@ -1,0 +1,23 @@
+--- Op'n-Czami Third-Party Legal Notices ---
+
+This application is built using a hybrid license model. The core Op'n-Czami code is licensed under the GNU Lesser General Public License (LGPL v3.0). 
+It incorporates the following third-party components and data:
+
+
+OPEN SOURCE LIBRARIES
+*   **Python Programming Language** (PSF License)
+    The fundamental platform is governed by the Python Software Foundation (PSF) License.
+
+*   **Leaflet - Interactive Mapping Library** (2-Clause BSD License)
+    Used for the World Map visualization (with custom GeoJSON data).
+
+*   **geoip2 (MaxMind GeoIP2 API)** (Apache License 2.0)
+    Used for local lookups against the GeoLite2 database.
+
+*   ** This product includes **GeoLite2 data** created by **MaxMind**, available from https://www.maxmind.com.
+    The use of this data is governed by the Creative Commons Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0) and the MaxMind End User License Agreement (EULA).
+
+*   **requests / Pillow (PIL) / ttkbootstrap** (Various Permissive Licenses, e.g., Apache 2.0, MIT)
+    Essential utility and UI libraries.
+
+

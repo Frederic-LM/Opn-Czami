@@ -1,0 +1,14 @@
+License Agreement for Op'n-Czami
+
+This installer will install Op'n-Czami ("the Software"), a hybrid-licensed application.
+1. License Overview
+    The core functionality of the Software is licensed under the GNU Lesser General Public License (LGPL), allowing free use, modification, and distribution — including for commercial purposes.
+    Advanced features of the Software require activation via a Professional license, which is subject to additional terms.
+2. Open-Source Components
+    The open-source components are distributed under the LGPL. You may access, modify, and redistribute them in accordance with the LGPL v3.0 license.
+    Source code for the open-source portion is available upon request or via our official repository.
+3. Professional License / Sustainability Notice
+    Certain features intended for advanced, enterprise, or specialist use are not covered by the LGPL and require a valid Professional license.
+    Use of these features without a valid license is not permitted.  You may request pricing or obtain a license at: Fredlm@ruederome.com
+4. Disclaimer
+This software is provided “as is,” without warranty of any kind, express or implied. See the LGPL license for more details.
