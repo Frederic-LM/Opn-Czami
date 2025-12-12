@@ -1,0 +1,118 @@
+# ============================================================================
+# Op'n-Czami Analytics - Nginx Configuration Example
+#
+# NOTE: Nginx does not use .htaccess files. Use this configuration
+#       as a reference to set up your Nginx server for Op'n-Czami.
+#
+# This example shows how to:
+# - Deny direct access to analytics.log
+# - Route extension-less URLs to analytics.php for logging
+# - Serve .lky certificate files
+#
+# License: MIT (See LICENSE file)
+# ============================================================================
+
+# Within your server { } block, add these configurations:
+
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # Your web root directory
+    root /var/www/your-domain/certificates;
+
+    # ========================================================================
+    # Security: Deny access to sensitive files
+    # ========================================================================
+
+    # Deny direct access to analytics log and metadata files
+    location ~ /\.(analytics|log|json)$ {
+        deny all;
+        return 403;
+    }
+
+    location ~ /analytics(-.*)?\.log$ {
+        deny all;
+        return 403;
+    }
+
+    location ~ /\.analytics-metadata\.json$ {
+        deny all;
+        return 403;
+    }
+
+    # ========================================================================
+    # PHP Handler: Route to analytics.php for logging
+    # ========================================================================
+
+    # Handle PHP files
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php7.4-fpm.sock;  # Adjust to your PHP version
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+
+    # ========================================================================
+    # URL Rewriting: Route extension-less URLs to analytics.php
+    # ========================================================================
+
+    # This location block matches any request that:
+    # - Is not for an existing file (!-f)
+    # - Is not for an existing directory (!-d)
+    # - Passes the request to analytics.php?file=REQUEST
+    location / {
+        try_files $uri $uri/ /analytics.php?file=$uri;
+    }
+
+    # ========================================================================
+    # Static Files: Cache .lky files
+    # ========================================================================
+
+    location ~ \.(lky)$ {
+        expires 24h;
+        add_header Cache-Control "public, max-age=86400";
+    }
+
+    # ========================================================================
+    # Logging
+    # ========================================================================
+
+    access_log /var/log/nginx/your-domain-access.log;
+    error_log /var/log/nginx/your-domain-error.log;
+}
+
+# ============================================================================
+# Important Notes
+# ============================================================================
+#
+# 1. PHP-FPM Socket:
+#    The fastcgi_pass line depends on your PHP installation.
+#    Common options:
+#    - PHP 7.4: unix:/run/php/php7.4-fpm.sock
+#    - PHP 8.0: unix:/run/php/php8.0-fpm.sock
+#    - PHP 8.1: unix:/run/php/php8.1-fpm.sock
+#    - TCP: 127.0.0.1:9000
+#
+#    To find your PHP-FPM socket:
+#    sudo ss -tlnp | grep php
+#    or
+#    grep listen /etc/php/*/fpm/pool.d/www.conf
+#
+# 2. File Permissions:
+#    - Directory: chmod 755
+#    - Files: chmod 644
+#    - analytics.log should be writable by the www-data user:
+#      sudo chown www-data:www-data /var/www/your-domain/certificates
+#
+# 3. Testing:
+#    After applying this config, test with:
+#    sudo nginx -t
+#    then reload:
+#    sudo systemctl reload nginx
+#
+# 4. Troubleshooting:
+#    - Check error logs: tail -f /var/log/nginx/your-domain-error.log
+#    - Verify PHP-FPM is running: sudo systemctl status php7.4-fpm
+#    - Test PHP: curl -I http://your-domain.com/analytics.php
+#
+# ============================================================================
