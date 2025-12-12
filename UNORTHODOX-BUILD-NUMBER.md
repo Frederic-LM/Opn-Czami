@@ -52,7 +52,8 @@ So that to **V3**.
 ### **Op’n Czami V3**
 
 V3 marks the **complete dismantling of the monolithic Tkinter GUI** and a full **separation of concerns** between interface and logic.
-This version runs fluently on both macOS and Windows without compromise.
+This version runs fluently on both macOS and Windows without compromise. 
+
 ---
 
 ### **Op’n Czami V4 aka is it Penelope Spiral, or Ulysse's Return**
@@ -67,6 +68,7 @@ But I incorparted something new and much more fun, a dashbord module that non on
 
 Example:
 `V3.x.y` → a stable, cross-platform build with clear modular separation.
+
 
 
 
