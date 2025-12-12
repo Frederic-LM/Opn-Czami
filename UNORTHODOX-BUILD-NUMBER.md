@@ -56,7 +56,7 @@ This version runs fluently on both macOS and Windows without compromise.
 
 ---
 
-### **Op’n Czami V4 aka is it Penelope Spiral, or Ulysse's Return**
+### **Op’n Czami V4 aka is it Penelope's spiral, or Ulysse's return**
 V4 is essensialy applying the dismantling of teh gui to the logic, for the pain of it. I could not bare to see my slim controler getting so fat, work was a lot harder than I thougth, creating a Bus, and injecting dependency. Thought i nver get the end of it I hope it paid.
 I removed the Interplaneraty file System block chain intergation, because it was too niche too geek and offered to little value at this point in time.
 But I incorparted something new and much more fun, a dashbord module that non only remplace the stand alone pyton reader, but also give insight of the system usage and disaplays in a world map. feature is pro pro, but part of the code is open and publish (the part that will be on your server to process the insight)
@@ -68,6 +68,7 @@ But I incorparted something new and much more fun, a dashbord module that non on
 
 Example:
 `V3.x.y` → a stable, cross-platform build with clear modular separation.
+
 
 
 
