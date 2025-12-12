@@ -53,6 +53,7 @@ So that to **V3**.
 
 V3 marks the **complete dismantling of the monolithic Tkinter GUI** and a full **separation of concerns** between interface and logic.
 This version runs fluently on both macOS and Windows without compromise.
+---
 
 ### **Op’n Czami V4 aka is it Penelope Spiral, or Ulysse's Return**
 V4 is essensialy applying the dismantling of teh gui to the logic, for the pain of it. I could not bare to see my slim controler getting so fat, work was a lot harder than I thougth, creating a Bus, and injecting dependency. Thought i nver get the end of it I hope it paid.
@@ -66,6 +67,7 @@ But I incorparted something new and much more fun, a dashbord module that non on
 
 Example:
 `V3.x.y` → a stable, cross-platform build with clear modular separation.
+
 
 
 
