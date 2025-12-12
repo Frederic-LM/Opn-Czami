@@ -1,18 +1,18 @@
-#  **Legato-Key: Modern & Tamper-Proof Certification**
+#  **LegatoKey: Modern & Tamper-Proof Certification**
 
-**Legato Key** is a modern system designed to help you issue **tamper-proof, cryptographically signed digital documents** without abandoning the physical format.
+**LegatoKey** is a modern system designed to help you issue **tamper-proof, cryptographically signed digital documents** without abandoning the physical format.
 It isn't a corporate product—it was crafted by a luthier with a computer science background whose every design choice reflects real-world instrument appraisal needs.
 
-## 🌿 The Legato Key Ecosystem is composed of:
-- **📱 The Legato Key App**: A free, client-side verification app.
+## 🌿 The Legato Ecosystem is composed of:
+- **📱 The LegatoLink App**: A free, client-side verification app.
 - **🧾 Op'n Czami**: An open-source authority dashboard to generate and sign certificates.
 
-## Why Use Legato Key?
+## Why Use LegatoKey?
 
 Traditional paper certificates or valuations can be lost, damaged, forged, or even digitally manipulated.
 In the world of fine instruments, where trust and provenance are fundamental, that's a real risk and liability. 
 
-Legato Key solves this by issuing **linked physical + digital certificates**:
+LegatoKey solves this by issuing **linked physical + digital certificates**:
 
 - ✅ A physical certificate to hold.
 - ✅ Tamper-proof digital certificates anyone can verify online.
