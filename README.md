@@ -82,7 +82,7 @@ You're managing high-volume operations or need legal-grade evidence, entreprise 
 
 You can install **Op'n Czami** on Windows using the official installer:
 
-➡️ [Download for Windows (.exe)](https://github.com/Frederic-LM/Opn-Czami/releases/download/RC2/Setup-OpnCzame.exe)
+➡️ [Download for Windows (.exe)](https://github.com/Frederic-LM/Opn-Czami/releases/download/v4.2.5/Setup-Opn-Czami.exe)
 
 1. Download the file.
 2. Double-click the `.exe` to launch the installer.
@@ -95,8 +95,8 @@ You can install **Op'n Czami** on Windows using the official installer:
 ### 🍎 For macOS Users (Apple Silicon)
 Op’n Czami is now supported on macOS (tested on Apple Silicon).
 I rewrote the entire source code from scratch for MacOS user to enjoy the smooth performance that windows and unix user had.
-
-➡️ Download for macOS (.dmg)
+https://github.com/Frederic-LM/Opn-Czami/releases/download/MacOs_4.2.5/OpnCzami.dmg
+➡️ [Download for macOS (.dmg)](https://github.com/Frederic-LM/Opn-Czami/releases/download/MacOs_4.2.5/OpnCzami.dmg)
 
 Download the .dmg.
 Open it and drag Op’n Czami into your Applications folder.
